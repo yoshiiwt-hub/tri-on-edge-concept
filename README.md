@@ -3,7 +3,6 @@
 [English](#english) ｜ [日本語](#日本語)
 
 ---
----
 
 ## English
 
@@ -109,6 +108,8 @@ https://creativecommons.org/licenses/by/4.0/
 
 The "LICENSE" file in this repository contains the CC BY 4.0 legal code.
 
+Logos and images in this repository are also licensed under CC BY 4.0, unless otherwise noted. The logos were created with the assistance of a generative AI tool (Gemini / Nano Banana), with manual adjustments by the author.
+
 ---
 
 ### Attribution
@@ -158,10 +159,6 @@ IWATA,Yoshitaka
 Tri-On-Edge is continuously evolving through practical application, verification, and improvement.
 
 This repository represents the state of the documentation at the time of publication and may be updated in the future.
-
----
----
-
 ## 日本語
 
 **Try on the Edge Now, KAIZEN the Future.**
@@ -265,6 +262,8 @@ https://creativecommons.org/licenses/by/4.0/legalcode.en
 https://creativecommons.org/licenses/by/4.0/
 
 本リポジトリの「LICENSE」ファイルには、CC BY 4.0の法的文言（正文）が含まれています。
+
+特に明記されない限り、本リポジトリ内のロゴ・画像もCC BY 4.0の下で提供されます。ロゴは生成AIツール（Gemini / Nano Banana）を用いて作成し、著者が手動で調整を加えたものです。
 
 ---
 
