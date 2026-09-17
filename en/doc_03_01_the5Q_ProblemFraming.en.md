@@ -30,8 +30,6 @@ Parent Document
 
 5. Where is that information/data right now? Is it being collected, and can it be viewed together in one place?
 
-- From what we've talked about today, is there anything small you could try first?
-
 ---
 
 ## Notes and Guidance
@@ -164,6 +162,10 @@ Sample checks
 #### **③ What would help**
 　They want to know the quality indicator is dropping even without looking at a computer. Something like a patrol lamp beside the line — naturally visible just by being there — to signal it.
 
+Sample checks
+- **[Constraint on where feedback goes]**
+  - Given that the site can't always watch a PC screen, an important design constraint is that the output destination is a physical device (such as a patrol lamp), not a PC notification.
+
 #### **④ Data that might be related**
 　Outcome side: the quality indicator's measured value (within spec or out of spec), timing of defect occurrence
 　Cause (candidate) side: equipment operating data (vibration, temperature, pressure, etc.), the trend of the quality indicator itself (is it continuously declining?)
@@ -181,12 +183,6 @@ Sample checks
 
 **Next action**
 　Start by pulling just the quality-indicator data from the PLC, and check on a graph whether a continuous decline is visible before it goes out of spec. If it is visible, consider a mechanism to connect it to the patrol lamp.
-
-Sample checks
-- **[Staged goal-setting]**
-  - "Early detection while still within spec" = the ideal form / "detection right after going out of spec" = a realistic first step.
-- **[Constraint on where feedback goes]**
-  - Given that the site can't always watch a PC screen, an important design constraint is that the output destination is a physical device (such as a patrol lamp), not a PC notification.
 
 
 End of document
