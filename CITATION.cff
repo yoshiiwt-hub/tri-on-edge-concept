@@ -1,0 +1,16 @@
+cff-version: 1.2.0
+message: "If you use or reference this concept and documentation, please cite it as below."
+authors:
+  - family-names: "IWATA"
+    given-names: "Yoshitaka"
+title: "Tri-On-Edge Documentation: Open Concept and Methodology for Edge-Based Data Processing in Manufacturing"
+url: "https://github.com/yoshiiwt-hub/tri-on-edge-concept"
+license: "CC-BY-4.0"
+keywords:
+  - manufacturing
+  - edge-computing
+  - ot-it
+  - operational-technology
+  - smart-manufacturing
+  - stream-processing
+  - kaizen
