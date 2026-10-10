@@ -1,0 +1,12 @@
+# 公開しないもの（実行時の出力、各環境の設定、ビルド成果物、実行バイナリ）
+log/
+work/
+dist/
+build/
+__pycache__/
+*.pyc
+*.log
+*.exe
+*.dll
+device_info.json
+_env/bin/
