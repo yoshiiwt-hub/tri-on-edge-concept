@@ -11,3 +11,5 @@ __pycache__/
 *.dll
 device_info.json
 _env/bin/
+.env
+*.pfx
