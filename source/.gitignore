@@ -3,7 +3,7 @@ log/
 work/
 dist/
 build/
-_[CONFIDENTIAL]/
+_\[CONFIDENTIAL\]/
 __pycache__/
 *.pyc
 *.log
