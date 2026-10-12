@@ -11,7 +11,7 @@ The documentation and images in this repository are licensed under CC BY 4.0. Se
 
 ## 日本語
 
-このディレクトリは、Tri-On-Edge のソースコードを置くための場所です。
+このディレクトリには、Tri-On-Edge のソースコードが入っています。
 
 このディレクトリ内のソースコードには、MITライセンス（このディレクトリの `LICENSE`）が適用されます。
 本リポジトリのドキュメントと画像には CC BY 4.0 が適用されます。詳しくはリポジトリ直下の `README.md` を参照してください。
