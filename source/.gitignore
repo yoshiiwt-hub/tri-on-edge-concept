@@ -1,15 +1,12 @@
-# 公開しないもの（実行時の出力、各環境の設定、ビルド成果物、実行バイナリ）
-log/
-work/
-dist/
-build/
-_\[CONFIDENTIAL\]/
-__pycache__/
-*.pyc
-*.log
-*.exe
-*.dll
-device_info.json
-_env/bin/
-.env
-*.pfx
+#source/
+/*
+
+!/tri_s10_stream/
+!/tri_s20_stored/
+
+# all sub dir
+!.gitignore
+!.gitkeep
+!__init__.py
+!README.md
+!LICENSE
