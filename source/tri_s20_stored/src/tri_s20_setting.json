@@ -1,0 +1,52 @@
+{
+    "##_about": "tri_s20_setting.json のサンプル。コピーして tri_s20_setting.json にリネームして使用する",
+
+    "## TITLE"  : "解析対象データセット名。LOAD_MODULE はこの値の lower() で自動決定される",
+    "TITLE"     : "Sin_wave",
+
+    "## OUTDIR" : "出力先ディレクトリ。相対パスは本ファイルの場所を基点に解決。絶対パスも可",
+    "OUTDIR"    : "./output/",
+
+    "eda": {
+        "## IS_WAVE"       : "true=波形データモード（load_wave_data + overlap可視化）  false=統計量モード",
+        "IS_WAVE"          : true,
+
+        "## INTERACT_MODE" : "offline=ブラウザ表示なし  online=インタラクティブ表示",
+        "INTERACT_MODE"    : "online",
+
+        "## graph_to_viz"  : "描画グラフ種別（複数指定可）: dist / line / scat",
+        "graph_to_viz"     : ["dist", "scat"]
+    },
+
+    "learn": {
+        "## LEARN_MODULE"     : "使用する学習モジュール: tri_s21_learn_us_mt / tri_s21_learn_us_gb",
+        "LEARN_MODULE"        : "tri_s21_learn_us_mt",
+
+        "## LOAD_FUNC"        : "データロード関数: load_data（統計量）/ load_wave_data（波形）",
+        "LOAD_FUNC"           : "load_data",
+
+        "## LEARN_CONFIG_KEY" : "LEARN_MODULE に合わせて指定: learn_mt / learn_gb",
+        "LEARN_CONFIG_KEY"    : "learn_mt",
+
+        "## learn_gb" : "tri_s21_learn_us_gb 使用時の設定。LEARN_CONFIG_KEY = learn_gb に変更して使う",
+        "learn_gb": {
+            "val_to_judge" : "Sin",
+            "title"        : "GB",
+            "## method"    : "外れ値判定方法: mm=min-max / iqr=四分位範囲",
+            "method"       : "mm",
+            "buffer_x"     : 0,
+            "buffer_y"     : [0, 0],
+            "offset_lw"    : [0, 0],
+            "offset_up"    : [0, 0],
+            "save_plot"    : false,
+            "encoding"     : "cp932",
+            "plot_config"  : {}
+        },
+
+        "## learn_mt" : "tri_s21_learn_us_mt 使用時の設定。LEARN_CONFIG_KEY = learn_mt に変更して使う",
+        "learn_mt": {
+            "mt_target_col_names" : ["Sin_mean","Sin_std","Sin_med","Sin_min","Sin_max"],
+            "title"               : "MT"
+        }
+    }
+}

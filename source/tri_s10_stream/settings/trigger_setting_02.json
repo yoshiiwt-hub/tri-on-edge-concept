@@ -1,0 +1,19 @@
+{"##": "公開用サンプル"
+
+    , "##": "■■■■■■■■■■■■■■■■"
+    , "##": "■ In-Memory Queue Trigger　　"
+    , "##": "■■■■■■■■■■■■■■■■"
+
+    , "segment_header": {
+          "0": ["seg_id"    , "str" , "key", "key", "Segment ID"]
+        , "1": ["seg_ind"   , "int" , "key", "key", "Segment Row Index"]
+        , "2": ["seg_ts"    , "time", "key", "key", "Timestamp When Data Collected"]
+        , "3": ["seg_status", "int" , "key", "key", "Segment Process Status"]
+    }
+
+    , "act_trigger": {
+          "module": "src.tri_s12_act_tmpl_queue"
+        , "func"  : "a_template_imq_trigger"
+    }
+
+}

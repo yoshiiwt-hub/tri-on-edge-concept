@@ -1,0 +1,9 @@
+{
+    "VERBOSE": true
+  , "encode" : "utf-8"
+  , "sep" : "\n"
+  , "ip" : "127.0.0.1"
+  , "port" : 52001
+  , "req_rep": true
+  , "chunk": 64
+}

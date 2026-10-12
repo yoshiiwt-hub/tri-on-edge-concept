@@ -1,0 +1,2 @@
+seg_id,seg_ts_start,seg_ts_end,seg_rows,Seg_Len,Sin_mean,Sin_mean_025_075,Sin_med,Sin_min,Sin_max,Sin_range,Sin_std,Sin_count,Sin_n_null,Sin_pertl_25,Sin_pertl_75,Sin_iqr,Sin_sig_u,Sin_sig_l,LOT_mode,LOT_first,LOT_last,LOT_nth_050_100_10,dev_name,dev_ip,kotei_name
+2026071715103942,2026-07-17 15:10:39.423000,2026-07-17 15:10:49.302000,99,99,2.2124,-13.6531,1.3314,-103.60186853295069,101.90951876211174,205.5114,64.4474,99,0,-54.5492,56.4322,110.9814,195.5547,-191.1299,LT0005,LT0005,LT0005,LT0005,,,,QDQJ2590,172.19.xx.xx,çHíˆAAA
