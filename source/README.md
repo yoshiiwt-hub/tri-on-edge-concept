@@ -4,7 +4,7 @@
 
 ## English
 
-This directory is reserved for the source code of Tri-On-Edge.
+This directory contains the source code of Tri-On-Edge.
 
 The source code in this directory is licensed under the MIT License (see `LICENSE` in this directory).
 The documentation and images in this repository are licensed under CC BY 4.0. See the `README.md` at the repository root for details.
