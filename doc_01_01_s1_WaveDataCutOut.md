@@ -1,8 +1,8 @@
 # Tri-On-Edge 波形切出しロジックと設定ガイド
 
-- Ver: 01.c.20260814
-- By: IWATA,Y.
-- Mod: ドキュメント再編
+- Ver: 01.f.20261005
+- By: IWATA, Y.'s Agent AI
+- Mod: 判定の閾値キーを実装どおり `border` に修正（従来の `threshold` は読まれず判定が成立しなかった）。duration の説明を実装に合わせて修正
 
 ---
 
@@ -74,17 +74,21 @@ stateDiagram-v2
 }
 ```
 
+セグメント長の上限（`seg_max_rows` / `seg_max_sec`）も同じ `monitor` セクションに記述する（「5. セグメント長の上限（強制クローズ）」参照）。
+
 ### 利用可能な判定メソッド
 
-| メソッド名 | 説明 | threshold |
+閾値は各チェックの `border` キーに記述する（`"threshold"` などそれ以外のキー名は読まれず、閾値なし（None）として扱われるため判定が成立しない）。
+
+| メソッド名 | 説明 | border |
 |---|---|---|
-| upto | 前回値より上昇し、かつ閾値以上になった | 数値（下限） |
-| downto | 前回値より下降し、かつ閾値以下になった | 数値（上限） |
+| upto | 前回値より上昇し、かつ閾値以上になった | 数値（下限）、または範囲 `{"lower": 下限, "upper": 上限}`（前回値が範囲外→今回値が範囲内で成立） |
+| downto | 前回値より下降し、かつ閾値以下になった | 数値（上限）、または範囲 `{"lower": 下限, "upper": 上限}`（同上） |
 | change | 前回値と値が変わった | null |
 | equal | 値が閾値と等しい | 値 |
 | not_equal | 値が閾値と異なる | 値 |
 | diff | 前回値との差分（絶対値）が閾値以上 | 数値 |
-| duration | 指定回数、ループが回った | 回数（int） |
+| duration | そのステージがアクティブな間（前段のステージが成立してから）に、指定回数評価された（＝指定レコード数を受信した） | 回数（int） |
 | duration_time | ステージ開始から指定秒数が経過した | 秒数（float） |
 
 ## 3. 設定パターン集
@@ -98,13 +102,13 @@ stateDiagram-v2
     "seg_start": {
         "stages": [{
             "op": "AND",
-            "checks": [{ "method": "upto", "target_loc": 5, "threshold": 10.0 }]
+            "checks": [{ "method": "upto", "target_loc": 5, "border": 10.0 }]
         }]
     },
     "seg_end": {
         "stages": [{
             "op": "AND",
-            "checks": [{ "method": "downto", "target_loc": 5, "threshold": 5.0 }]
+            "checks": [{ "method": "downto", "target_loc": 5, "border": 5.0 }]
         }]
     }
 }
@@ -118,12 +122,12 @@ stateDiagram-v2
 "monitor": {
     "seg_start": {
         "stages": [{
-            "checks": [{ "method": "change", "target_loc": 0, "threshold": null }]
+            "checks": [{ "method": "change", "target_loc": 0, "border": null }]
         }]
     },
     "seg_end": {
         "stages": [{
-            "checks": [{ "method": "change", "target_loc": 0, "threshold": null }]
+            "checks": [{ "method": "change", "target_loc": 0, "border": null }]
         }]
     }
 }
@@ -143,12 +147,12 @@ stateDiagram-v2
         {
             "##": "Stage 1: まずONになったことを検知",
             "op": "AND",
-            "checks": [{ "method": "equal", "target_loc": 3, "threshold": 1 }]
+            "checks": [{ "method": "equal", "target_loc": 3, "border": 1 }]
         },
         {
             "##": "Stage 2: その後、2秒間待機",
             "op": "AND",
-            "checks": [{ "method": "duration_time", "target_loc": 0, "threshold": 2.0 }]
+            "checks": [{ "method": "duration_time", "target_loc": 0, "border": 2.0 }]
         }
     ]
 }
@@ -163,8 +167,8 @@ stateDiagram-v2
     "stages": [{
         "op": "OR",
         "checks": [
-            { "method": "equal", "target_loc": 2, "threshold": "E001" },
-            { "method": "equal", "target_loc": 2, "threshold": "E002" }
+            { "method": "equal", "target_loc": 2, "border": "E001" },
+            { "method": "equal", "target_loc": 2, "border": "E002" }
         ]
     }]
 }
@@ -178,5 +182,60 @@ stateDiagram-v2
 | Sequential | 時間差判定・手順順守確認 | stages を複数定義（Stage1 → Stage2 → ...）。 |
 
 まずはパターンAで動作確認し、ノイズが問題になったらパターンCを使うのを推奨
+
+
+## 5. セグメント長の上限（強制クローズ）
+
+終了条件が成立しないまま入力が続くと、セグメントのバッファが際限なく伸び、エッジPCのメモリを圧迫する。
+これを防ぐため、セグメントの長さに上限を設けられる（`monitor` セクションに記述）。
+
+```json
+"monitor": {
+    "seg_start": { ... },
+    "seg_end":   { ... },
+    "seg_max_rows": 100000,
+    "seg_max_sec" : 600
+}
+```
+
+| キー | 説明 | 既定値 |
+|---|---|---|
+| seg_max_rows | セグメントの最大行数。開始点を含む行数がこの値に達したら強制クローズする | 0（無制限） |
+| seg_max_sec | セグメントの最大秒数。開始点の受信時刻から、この秒数以上経過したレコードで強制クローズする | 0（無制限） |
+
+- 両方を設定した場合は、**先に達した方**で強制クローズする。0 にした方は無効
+- 強制クローズ時は、その時点のバッファを1つのセグメントとして後工程（Act）へ送る（終点の扱いと同じ）
+- 強制クローズ後は 0: Idle（待機）に戻り、次のレコードから開始条件を評価し直す
+  - 開始条件が状態型（例：`equal`）でまだ成立していれば、すぐに次のセグメントが始まる（上限ごとに分割されて流れる）
+  - 開始条件が変化型（例：`change`）なら、次の変化を待つ
+- 強制クローズはログファイルに WARNING（`reason=rows` / `reason=sec`、行数・秒数付き）として1行残り、
+  定期集計 `[SEG SUMMARY]` の `forced=件数`、運用系メトリクス `total_forced_segments` にも計上される
+- 秒数の判定はレコード受信時に行う（入力が途切れている間は判定しないが、その間バッファも増えない）
+- 強制クローズしたセグメントには終点行（終了条件が成立した行）が無いため、`CUT_LAST_ROW = True` の Act でも
+  Stream Core は最終行を除外しない（全行が後工程へ届く。「6. 終点行の扱い」参照）
+
+## 6. 終点行の扱い（CUT_LAST_ROW）
+
+セグメントは「開始点から、終了条件が成立した行（終点行）まで」として切り出される。
+終点行は、使い方によって中身が異なる。
+
+| 使い方 | 終点行の中身 |
+|---|---|
+| LOT 変化（`change`） | 次の LOT の先頭行（終点＝開始点の場合は次のセグメントの先頭行にもなる） |
+| ファイル監視（find_file） | セグメント区切りのダミー行（`"____"`） |
+| PLC の起動信号が落ちる構成 | 信号が 0 になった実データの行 |
+
+終点行を後工程（Act）で使うかどうかは、Act Trigger 関数の属性 `CUT_LAST_ROW` で宣言する。
+
+| CUT_LAST_ROW | Stream Core の動作 |
+|---|---|
+| `True` | 終点行を除外してから Act へ渡す（STQ の場合は除外してから登録する） |
+| `False` | 終点行を含めて全行を渡す（扱いは Act 側で判断する。例: rdb 系は `exclude_last_row` 設定で判断） |
+| 属性なし | `False` と同じ（全行を渡す） |
+
+- 意図を示すため、リポジトリ内の Act Trigger は `True` / `False` のどちらも明記している
+- 上限（`seg_max_rows` / `seg_max_sec`）による強制クローズのセグメントは、終点行が無いため除外しない
+- `seg_range`（検出ログの区間表示）は終点行を含む `[開始index, 終点index]` で表示する
+- 起動時のログに `cut_last_row=True/False (declared / default: not declared)` が出力される
 
 以上
