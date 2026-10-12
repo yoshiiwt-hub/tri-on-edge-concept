@@ -1,0 +1,39 @@
+{
+      "##": "========================================"
+    , "##": " Sample Socket Server 設定ファイル（socket_server.py）"
+    , "##": " 起動: python socket_server.py [この設定ファイル]"
+    , "##": "========================================"
+
+    , "##": "■ ネットワーク設定"
+    , "ip"         : "127.0.0.1"
+    , "port"       : 9001
+    , "encode"     : "utf-8"
+    , "sep"        : "\n"
+    , "chunk"      : 1024
+    , "VERBOSE"    : false
+
+    , "##": "■ CSV設定"
+    , "##": "csv_path   : CSVファイルのパス（この設定ファイルからの相対パス、または絶対パス）"
+    , "##": "csv_encode : CSVの文字コード（既定: utf-8）"
+    , "##": "csv_header : true なら CSV の1行目（ヘッダ行）を読み飛ばす（既定: false）"
+    , "##": "mode       : sequential（既定）… 1行ずつ順番に返す（末尾で先頭に戻る）"
+    , "##": "             random            … GET のたびにランダムな行を返す"
+    , "##": "             put_only          … PUT 専用（GET には ERROR を返す。csv_path / column 不要）"
+    , "csv_path"   : "../../settings/data/generate_waveform_sample.csv"
+    , "csv_encode" : "utf-8"
+    , "csv_header" : true
+    , "mode"       : "sequential"
+
+    , "##": "put_ack    : PUT に OK を返すか（既定: true）。応答を読まないクライアント（act_socket の ack_mode=false）には false にする"
+    , "put_ack"    : true
+
+    , "##": "■ カラム定義（2要素目の dtype だけを使う: time（文字列扱い）| str | int | float）"
+    , "column": {
+          "0": ["Timestamp", "time" , "key"     , "key"        , "データ発生時の時刻"]
+        , "1": ["LOT"      , "str"  , "key"     , "key"        , "製造id"]
+        , "2": ["Sin"      , "float", "numetory", "explanatory", "疑似波形（sin）"]
+        , "3": ["Cos"      , "float", "numetory", "explanatory", "疑似波形（cos）"]
+        , "4": ["Tan"      , "float", "numetory", "explanatory", "疑似波形（tan）"]
+        , "5": ["CL"       , "int"  , "category", "objective"  , "正常／異常"]
+    }
+}

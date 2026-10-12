@@ -1,0 +1,52 @@
+{"##": "公開用サンプル"
+
+    , "##": "■■■■■■■■■■■■■■■■■■■■"
+    , "##": "■　デモ波形データをCSVから読込み　"
+    , "##": "■■■■■■■■■■■■■■■■■■■■"
+    , "column": {
+          "0": ["Timestamp", "time" , "key"     , "key"        , "データ発生時の時刻"]
+        , "1": ["LOT"      , "str"  , "key"     , "key"        , "製造id"]
+        , "2": ["Sin"      , "float", "numetory", "explanatory", "軸１トルク電流値（単位：Ｎ・ｍ／Ａ)）"]
+        , "3": ["Cos"      , "float", "numetory", "explanatory", "押出速度（単位：ｍｍ／ｓｅｃ）"]
+        , "4": ["Tan"      , "float", "numetory", "explanatory", "機内温度（単位：℃）"]
+        , "5": ["CL"       , "int"  , "category", "objective"  , "正常／異常"]
+    }
+    , "monitor": {
+        "seg_start" : {
+            "stages": [
+                {"op": "AND", "checks": [
+                    {"method": "change", "target_loc": 1}]}]},
+        "seg_end"   : {
+            "stages": [
+                {"op": "AND", "checks": [
+                    {"method": "change", "target_loc": 1}]}]
+        },
+        "##seg_start" : {
+            "stages": [
+                {"op": "AND", "checks": [
+                    {"method": "upto", "border": 50, "target_loc": 2}]}]},
+        "##seg_end"   : {
+            "stages": [
+                {"op": "AND", "checks": [
+                    {"method": "duration", "border": 50, "target_loc": 2}]}]
+        },
+        "##seg_start" : {
+            "stages": [
+                {"op": "AND", "checks": [
+                    {"method": "duration_time", "border": 1}]}]},
+        "##seg_end"   : {
+            "stages": [
+                {"op": "AND", "checks": [
+                    {"method": "duration_time", "border": 5}]}]
+        },
+        "timestamp_round_ms": 1
+    }
+    , "find_trigger": {
+          "module": "src.tri_s11_find_demo"
+        , "func"  : "f_demo_csv_trigger"
+        , "file_path": "settings/data/generate_waveform_sample.csv"
+        , "##file_path": "settings/data/generate_waveform_sample_invalid.csv"
+        , "encode"   : "utf-8"
+        , "interval" : 0.1
+    }
+}
