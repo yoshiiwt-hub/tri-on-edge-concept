@@ -1,8 +1,8 @@
 # Tri-On-Edge Waveform Statistics Calculation and Configuration Guide
 
-- Ver: 01.a.20260814
-- By: IWATA,Y.
-- Mod: Initial creation
+- Ver: 01.d.20261006
+- By: IWATA, Y.'s Agent AI
+- Mod: Synced with the Japanese edition 01.e. Added a note that Find's type-cast defaults (e.g., -9999.9) are aggregated as valid values, and recommended setting them to null
 
 ---
 
@@ -69,8 +69,12 @@ Parent Document
 |----|------|------|
 | 0 | `seg_id` | Segment ID (a unique value based on the occurrence time) |
 | 1 | `seg_ts_start` | Start timestamp of the waveform |
-| 2 | `seg_ts_end` | End timestamp of the waveform |
-| 3 | `seg_rows` | Number of rows in the waveform |
+| 2 | `seg_ts_end` | End timestamp of the waveform (the time of the **last data row**, not of the end row where the end condition held) |
+| 3 | `seg_rows` | Number of rows in the waveform (excluding the end row) |
+
+Note: Act Triggers that calculate statistics have `CUT_LAST_ROW = True`, so they calculate from the segment from which Stream Core has excluded the end row
+(see "6. Handling of the End Row" in the Waveform Cut-Out guide). `seg_ts_end - seg_ts_start` is the time difference between the first and last data rows
+(one sampling period shorter than the length up to the time the end condition held).
 
 ---
 
@@ -90,19 +94,28 @@ Parent Document
 | `n_null` | Count of nulls | Number of rows that could not be converted to float. `count + n_null = seg_rows` |
 | `sum` | Sum | |
 
+Note: When a value is absent or cannot be cast, Find sends the configured default (`int_default` / `float_default`; `-9999` / `-9999.9` if omitted).
+These defaults can be converted to float, so they are **aggregated as valid values** (`mean`, `min`, etc. are distorted, and they are not counted in `n_null`).
+When calculating statistics, setting `int_default` / `float_default` of Find (`find_trigger`) to `null` is recommended.
+With `null`, a missing value arrives as None, is excluded from aggregation, and is counted in `n_null` (`time_default` / `str_default` also accept `null`).
+
 ### 3-2. Distribution / Outlier Detection (target: numeric columns)
 
 | stat name | content | params | notes |
 |---------|------|--------|------|
 | `iqr` | Interquartile range (P75 − P25) | — | A measure of spread that is less affected by outliers |
-| `perctl` | Percentile | `p` : int | Valid values: 1, 5, 10, 25, 75, 90, 95, 99 |
-| `sig_u` | Upper sigma boundary (mean + n×std) | `n` : float | Used as an upper control limit |
-| `sig_l` | Lower sigma boundary (mean − n×std) | `n` : float | Used as a lower control limit |
+| `pertl` | Percentile (linear interpolation) | `p` : int | Valid values: 1, 5, 10, 25, 75, 90, 95, 99 |
+| `sig_u` | Upper sigma boundary (mean + n×std) | `n` : float | A guide to the variation **within one segment** |
+| `sig_l` | Lower sigma boundary (mean − n×std) | `n` : float | A guide to the variation **within one segment** |
+
+Note: `sig_u` / `sig_l` describe the variation of values within one segment (mean ± n×std within the segment). They are not SPC control limits (upper and lower limits derived from the variation between segments, i.e., between lots or shots). To use control limits, calculate them separately from the statistics of multiple segments (e.g., diag_spc).
 
 ### 3-3. Arbitrary Row Retrieval (target: numeric and string columns)
 
 | stat name | content | params | notes |
 |---------|------|--------|------|
+| `first` | Value of the first row (raw value) | — | Numeric or string. Not converted to float |
+| `last` | Value of the last row (raw value) | — | Numeric or string. Not converted to float |
 | `nth` | Value of the nth row (raw value) | `n` : int | Positive: 1-indexed / Negative: counted from the end |
 | `mode` | Mode | — | Excludes None. Ties go to the first occurrence |
 
@@ -111,6 +124,7 @@ Parent Document
 | stat name | content | src_col_idx | notes |
 |---------|------|-------------|------|
 | `seg_len` | Number of records | `-1` (fixed) | — |
+| `const` | Fixed value (outputs the configured value as-is) | Any (e.g., `-1`) | Written as `[-1, "const", value]`. Independent of the segment content (e.g., a label string or line name) |
 
 ---
 
@@ -144,7 +158,7 @@ Written in the `act_trigger` section of `trigger_setting_02.json`.
 
 ```json
 "act_trigger": {
-    "module"    : "src.tri_edge_12_act",
+    "module"    : "src.tri_s12_act",
     "func"      : "a_socket_client_trigger",
     "send_stats": true,
 
@@ -226,9 +240,9 @@ Scenario: "Understand the shape of the distribution and detect outliers using pe
 
 ```json
 "column_register_map": {
-    "0":  [6,  "perctl", 25],
+    "0":  [6,  "pertl", 25],
     "1":  [6,  "med"],
-    "2":  [6,  "perctl", 75],
+    "2":  [6,  "pertl", 75],
     "3":  [6,  "iqr"],
     "4":  [6,  "sig_u",  3],
     "5":  [6,  "sig_l",  3]
