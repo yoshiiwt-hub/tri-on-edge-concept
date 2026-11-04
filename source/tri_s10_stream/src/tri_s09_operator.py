@@ -4,19 +4,20 @@
 """
 ########################################
 # Operator Module
-# Ver: 04.m.20261005    By: IWATA, Y.'s Agent AI
-# Mod: 古いログの定期削除（log_retention.keep_days。E-7）、監視ディレクトリの未検出・読取エラー表示（E-1）、IP 取得スタブと Teams の (IP) 欄を削除（C-2）
+# Ver: 04.o.20261102    By: IWATA, Y.'s Agent AI
+# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
 ########################################
+StreamCore を起動・監視し、止まっても自動で再起動して、稼働状況を外部へ知らせる運用役
 
-動作概要
-    1. 01_operator.json の設定に従いシステム全体を制御するオペレータモジュール
-    2. stream_core（tri_s10_stream_core）を子スレッドで起動・監視
-    3. CPU / ディスク / メモリ使用率を定期取得してシステムリソースを監視
-    4. 停止ファイル・ハートビートファイルを監視し、異常時はストリームを再起動
-    5. Webhook（Teams 等）へのアラート通知機能を提供
-    ※ log_retention.keep_days（日）を設定すると、起動時と1日1回、更新日時が古いログファイルを削除する（未設定・0 は削除しない）
-       （定期通知: t_state_monitor_worker、オンデマンド通知: t_ondemand_notify_worker。宛先は別）
-    6. スタンドアロン実行（__main__）時はオペレータループを直接起動
+主要関数:
+main_loop                   # StreamCore を起動し、例外で終了したら再起動する。
+t_metrics_collector_worker  # CPU・メモリ・ディスクの使用状況を定期的に計測する。
+t_state_monitor_worker      # 稼働状況を定期的に Teams 等へ通知する。
+t_ondemand_notify_worker    # トリガーからの通知要求を、その都度 Teams 等へ送る（定期通知とは別の宛先）。
+
+位置づけ: プロセスの最上位で、StreamCore（tri_s10_stream_core）を同期呼び出しで動かす。停止ファイルの監視は StreamCore 側が行い、Operator は受け取った停止理由に従って終了・再起動を判断する。
+設計意図: 計測・定期通知・オンデマンド通知を別スレッドに分け、通知の遅れや失敗が計測や StreamCore の監視に影響しないようにする。Webhook は標準ライブラリ（urllib）だけで送り、プロキシや Entra ID 認証が必要な環境でも追加のライブラリなしで動くようにする。
+前提・制約: ハートビートによるハング（例外を出さずに止まる状態）の検知・再起動は未実装（T.B.D.。A-5）。log_retention.keep_days を設定すると、起動時と1日1回、更新日時の古いログファイルを削除する（未設定・0 は削除しない）。
 """
 MODULE_NAME = "OPERATOR"
 

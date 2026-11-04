@@ -4,37 +4,19 @@
 """
 ########################################
 # Act Trigger Module [Socket Send]
-# Ver: 02.b.20261005    By: IWATA, Y.'s Agent AI
-# Mod: 統計まわりを init_stats / calc_stats / export_out_coldef に集約（出力内容は従来どおり。B-9）。初回接続の失敗を ErrorIF へ報告（phase=startup / category=comm。A-21）
+# Ver: 02.e.20261102    By: IWATA, Y.'s Agent AI
+# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
 ########################################
-a_send_seg_trigger    # セグメントの全行をJSON形式でTCPソケット送信する
-a_send_stats_trigger  # セグメントの統計量を算出し、1件をJSON形式でTCPソケット送信する
+セグメントの値や統計量を、TCP ソケットで他のシステムへ送り出す出口
 
-動作概要
-    1. 起動時にソケットサーバへ接続する（a_send_stats_trigger の場合はあわせて
-       column_register_map / out_coldef から統計マップを初期化する）
-    2. ループ内でキューからセグメントを受信し項目数の整合性を確認する
-    3. a_send_seg_trigger   : セグメントの全行を1行ずつJSON形式で逐次送信する
-       a_send_stats_trigger : build_stats() で統計量を算出して1レコードを送信する
-    4. ack_mode=True の場合は送信ごとにサーバから "OK" 応答を待ってから次の送信へ進む
-    5. 接続断時は is_online=False に移行し reconnect_interval_sec 秒ごとに再接続を試みる
-    6. skip_on_offline=True の場合はオフライン中のセグメントをスキップしてキューを消費する
+主要関数:
+a_send_seg_trigger    # セグメントの全行を、1行ずつ JSON で送信する。
+a_send_stats_trigger  # セグメントの統計量を求め、1件の JSON で送信する。
+_run_send_trigger     # 2つの trigger の共通ループ（送る内容だけが異なる）。
 
-接続設定（共通）
-    server_ip              : 送信先サーバの IP アドレス（デフォルト: "127.0.0.1"）
-    server_port             : 送信先サーバのポート番号（デフォルト: 9000）
-    timeout_sec             : ソケット接続タイムアウト秒数（デフォルト: 5.0）
-    reconnect_interval_sec  : 再接続インターバル秒数（デフォルト: 5.0）
-    skip_on_offline         : オフライン時にセグメントをスキップするか（デフォルト: True）
-    encode                  : 文字エンコーディング（デフォルト: "utf-8"）
-    sep                     : データ区切り文字（デフォルト: "\\n"）
-    chunk                   : 受信チャンクサイズ バイト（デフォルト: 1024）
-    ack_mode                : 送信ごとに ACK を待つか（デフォルト: False）
-
-a_send_stats_trigger 専用設定
-    column_register_map : 統計量算出用の列マッピング定義（必須）
-    out_coldef           : 統計量の出力列定義（必須）
-    save_dir             : out_coldef を保存するディレクトリ（デフォルト: "output"）
+位置づけ: 受け手は独自のソケットサーバー。
+設計意図: 受け手の応答（ACK）を確かめるモードを用意し、受け手が受け取れなかった行を送信済みに数えない。送信中に切断したセグメントは、再接続後に最初から送り直し、取りこぼしを減らす（受け手は seg_id / seg_ind で重複を見分ける）。
+前提・制約: 受け手は、区切り文字で終わる JSON を1行ずつ受け取り、ACK を使う場合は "OK" を返すこと。
 """
 MODULE_NAME = "ACT_Socket"
 
@@ -121,7 +103,19 @@ def _run_send_trigger(
     config:     Dict[str, Any],
     stop_event: threading.Event,
 ) -> None:
-    """TCPソケットでサーバへ送信する共通ループ。mode で送信内容だけが変わる"""
+    """TCPソケットでサーバへ送信する共通ループ。mode で送信内容だけが変わる
+
+    [動作の要点]（旧モジュール Docstring から移動）
+        ack_mode=True: 送信ごとにサーバの応答を区切り文字まで読み、"OK" なら次へ進む
+            "OK" 以外（NG）は ErrorIF（phase=loop / category=data）へ報告し、送信済みに数えない（ack_ng_action に従う。A-8）
+            応答が timeout_sec 以内に来ない場合は通信異常として切断し、オフラインへ移る
+        再接続: キューが空のときに加え、セグメントを受け取ったときにも間隔が過ぎていれば試みる
+        送り直し: 送信中に切断したセグメントは「再送待ち」として1つ持ち、再接続後に新しいセグメントより先に、最初の行から送り直す
+            （resend_max 回まで。超えたら ErrorIF へ報告して破棄。受け取る側は各行の seg_id / seg_ind で重複を見分けられる。A-9）
+            停止の合図（None）を受けたとき再送待ちがあれば、最後に1回だけ再接続・送り直しを試み、送れなければ破棄する
+        運用系メトリクス（ACT_Socket）: total_sent_segments / total_ack_ng / total_resent_segments /
+            total_dropped_segments（送り直しの上限超え・停止時の再送待ち） / total_skipped_segments（オフラインでスキップ）
+    """
     TRIGGER_NAME = "a_send_seg_trigger" if mode == "seg" else "a_send_stats_trigger"
     _SIG_OFFLINE = f"ConnectionFailed.comm.loop.{TRIGGER_NAME}"
 
@@ -170,6 +164,20 @@ def _run_send_trigger(
         sep      = str(config.get("sep", "\n"))
         chunk    = int(config.get("chunk", 1024))
         ack_mode = bool(config.get("ack_mode", False))
+        ack_ng_action = str(config.get("ack_ng_action", "skip")).strip().lower()
+        if ack_ng_action not in ("skip", "retry", "abort_segment"):
+            raise ValueError(f"config['ack_ng_action'] must be 'skip' / 'retry' / 'abort_segment'. Got: {ack_ng_action!r}")
+        ack_retry  = int(config.get("ack_retry", 3))
+        resend_max = int(config.get("resend_max", 3))
+        if ack_retry < 0 or resend_max < 0:
+            raise ValueError(f"config['ack_retry'] / config['resend_max'] must be >= 0. Got: {ack_retry} / {resend_max}")
+        base.output_log(MODULE_NAME,
+            f"ack_mode={ack_mode} ack_ng_action={ack_ng_action} ack_retry={ack_retry} resend_max={resend_max}", log_file)
+
+        # 運用系メトリクスの初期値（A-8 / A-9）
+        for _key in ("total_sent_segments", "total_ack_ng", "total_resent_segments",
+                     "total_dropped_segments", "total_skipped_segments"):
+            base.metrics_add(MODULE_NAME, _key, 0)
 
         # 初回接続
         tcp_socket: Optional[socket.socket] = None
@@ -193,11 +201,199 @@ def _run_send_trigger(
         stop_event.set()
         return None
 
-    """======== LOOP START ========"""
+    """======== 送信ヘルパー（A-8 / A-9） ========"""
     reconnect_fail_count = 0
     last_reconnect_try = time.time()
     skipped_seg_count = 0
+    ack_buf = ""                               # ACK の受信バッファ（区切り文字の後ろの残りを次の ACK に回す）
+    pending: Optional[Dict[str, Any]] = None   # 再送待ちのセグメント {"segment", "seg_id", "resends"}（最大1つ）
 
+    def _go_offline(e: BaseException, seg_id: Any, detail: str) -> None:
+        """通信異常を報告し、切断してオフラインへ移る"""
+        nonlocal tcp_socket, is_online, reconnect_fail_count, last_reconnect_try, ack_buf
+        _sig = ErrorIF.report_exception(e, phase="loop", category="comm",
+                                        trigger_id=TRIGGER_NAME, log_file=log_file)
+        if tcp_socket:
+            try:   tcp_socket.close()
+            except Exception: pass
+        tcp_socket           = None
+        is_online            = False
+        ack_buf              = ""
+        reconnect_fail_count = 0
+        last_reconnect_try   = time.time()
+        base.output_log(MODULE_NAME,
+            f"{TRIGGER_NAME} Connection Lost. to Offline. seg_id={seg_id}  {detail}", log_file)
+        if _sig == SIGNAL_STOP:
+            stop_event.set()
+
+    def _try_reconnect(log_each: bool = True) -> bool:
+        """再接続を1回試みる。成功なら True"""
+        nonlocal tcp_socket, is_online, reconnect_fail_count, last_reconnect_try, ack_buf
+        last_reconnect_try = time.time()
+        try:
+            tcp_socket = _connect(server_ip, server_port, timeout_sec)
+            is_online  = True
+            ack_buf    = ""
+            reconnect_fail_count = 0
+            base.output_log(MODULE_NAME, f"{TRIGGER_NAME} Reconnected. {server_ip}:{server_port}", log_file)
+            return True
+        except Exception as e:
+            reconnect_fail_count += 1
+            ErrorIF.report_event({
+                "trigger_id": TRIGGER_NAME,
+                "phase"     : "loop",
+                "category"  : "comm",
+                "exc_type"  : type(e).__name__,
+                "message"   : f"Re-Connect Failed ({reconnect_fail_count} times). {server_ip}:{server_port}",
+                "signature" : _SIG_OFFLINE,
+            })
+            if log_each:
+                base.output_log(MODULE_NAME,
+                    f"{TRIGGER_NAME} Re-Connect Failed ({reconnect_fail_count}). "
+                    f"{server_ip}:{server_port}  ({type(e).__name__}: {e})", log_file)
+            return False
+
+    def _recv_ack() -> str:
+        """
+        ACK を区切り文字まで読む（分かれて届いても、まとめて届いても1件ずつ取り出す。A-8）
+        timeout_sec 以内に区切り文字まで届かなければ socket.timeout、相手が切断したら ConnectionResetError
+        """
+        nonlocal ack_buf
+        while sep not in ack_buf:
+            data = tcp_socket.recv(chunk)
+            if not data:
+                raise ConnectionResetError("Server closed connection while waiting ACK.")
+            ack_buf += data.decode(encode)
+        line, ack_buf = ack_buf.split(sep, 1)
+        return line.strip()
+
+    def _send_message(send_str: str) -> bool:
+        """
+        PUT を1件送る。ack_mode=True なら ACK を読み、"OK" なら True、それ以外（NG）なら False
+        通信異常は例外のまま呼び出し側へ（_send_segment が切断として扱う）
+        """
+        tcp_socket.sendall(("PUT" + sep).encode(encode))
+        tcp_socket.sendall(send_str.encode(encode))
+        if not ack_mode:
+            return True
+        ack = _recv_ack()
+        if ack == "OK":
+            return True
+        return _report_ack_ng(ack)
+
+    _ack_ng_ctx: Dict[str, Any] = {}   # _report_ack_ng に渡す送信中の位置（seg_id / row）
+
+    def _report_ack_ng(ack: str) -> bool:
+        """ACK NG を ErrorIF（phase=loop / category=data）へ報告し、運用系メトリクスに数える。常に False を返す"""
+        ErrorIF.report_event({
+            "trigger_id": TRIGGER_NAME,
+            "phase"     : "loop",
+            "category"  : "data",
+            "exc_type"  : "AckNG",
+            "message"   : f"ACK NG: seg_id={_ack_ng_ctx.get('seg_id')}  row={_ack_ng_ctx.get('row')}  ack={ack!r}",
+            "signature" : f"AckNG.data.loop.{TRIGGER_NAME}",
+        })
+        base.metrics_add(MODULE_NAME, "total_ack_ng", 1)
+        base.output_log(MODULE_NAME,
+            f"{TRIGGER_NAME} ACK NG: seg_id={_ack_ng_ctx.get('seg_id')}  row={_ack_ng_ctx.get('row')}  ack={ack!r}", log_file)
+        return False
+
+    def _send_segment(segment: List[list], seg_id: Any) -> Dict[str, Any]:
+        """
+        1セグメントを送る（mode="seg": 全行を1行ずつ / mode="stat": 統計量1件）
+        Returns: {"status": "ok" | "aborted" | "disconnected", "sent": 送信済みの件数, "ack_ng": NG の件数}
+          ok           : 最後まで送った（NG の行は ack_ng_action に従い、送信済みには数えない）
+          aborted      : ack_ng_action="abort_segment" で残りを送らなかった
+          disconnected : 送信中に切断した（オフラインへ移行済み。呼び出し側で再送待ちにする）
+        """
+        if mode == "seg":
+            messages = []
+            for row_val in segment:
+                row_dict = {col_keys[i]: row_val[i] for i in range(len(col_keys))}
+                messages.append(json.dumps(row_dict, ensure_ascii=False, default=str) + sep)
+        else:
+            stats_dict = calc_stats(stats_ctx, segment, seg_id)
+            messages = [json.dumps(stats_dict, ensure_ascii=False, default=str) + sep]
+
+        sent = ack_ng = 0
+        for row_num, send_str in enumerate(messages, start=1):
+            _ack_ng_ctx.update(seg_id=seg_id, row=row_num if mode == "seg" else "stat")
+            try:
+                ok = _send_message(send_str)
+                tries = 0
+                while not ok and ack_ng_action == "retry" and tries < ack_retry:
+                    tries += 1
+                    ok = _send_message(send_str)
+            except Exception as e:
+                _go_offline(e, seg_id, f"sent={sent}/{len(messages)}" if mode == "seg" else "(stat mode)")
+                return {"status": "disconnected", "sent": sent, "ack_ng": ack_ng}
+            if ok:
+                sent += 1
+                continue
+            ack_ng += 1
+            if ack_ng_action == "abort_segment":
+                return {"status": "aborted", "sent": sent, "ack_ng": ack_ng}
+        return {"status": "ok", "sent": sent, "ack_ng": ack_ng}
+
+    def _log_result(seg_id: Any, n_messages: int, res: Dict[str, Any], resent: int = 0) -> None:
+        if res["status"] == "disconnected":
+            return
+        base.metrics_add(MODULE_NAME, "total_sent_segments", 1)
+        # 正常は画面のみ（ログファイルには書かない。件数は metrics）。ACK NG で中断した場合はログファイルにも残す
+        base.output_log(MODULE_NAME,
+            f"{TRIGGER_NAME} Segment {'Sent' if res['status'] == 'ok' else 'Aborted (ACK NG)'}. "
+            f"seg_id={seg_id}  mode={mode}  sent={res['sent']}  ack_ng={res['ack_ng']}  "
+            f"original_rows={n_messages}" + (f"  resent={resent}" if resent else ""),
+            log_file if res["status"] != "ok" else "")
+
+    def _hold_pending(segment: List[list], seg_id: Any) -> None:
+        """送信中に切断したセグメントを再送待ちにする（resend_max=0 なら送り直さず破棄）"""
+        nonlocal pending
+        if resend_max <= 0:
+            base.metrics_add(MODULE_NAME, "total_dropped_segments", 1)
+            base.output_log(MODULE_NAME,
+                f"WARNING  {TRIGGER_NAME} Segment Dropped (resend_max=0). seg_id={seg_id}", log_file)
+            return
+        pending = {"segment": segment, "seg_id": seg_id, "resends": 0}
+        base.output_log(MODULE_NAME,
+            f"{TRIGGER_NAME} Segment Held for Resend. seg_id={seg_id}  resend_max={resend_max}", log_file)
+
+    def _flush_pending() -> bool:
+        """
+        オンラインなら再送待ちのセグメントを最初の行から送り直す。
+        Returns: 再送待ちが無くなった（送れた・上限で破棄した）なら True、まだ残っている（切断した）なら False
+        """
+        nonlocal pending
+        if pending is None:
+            return True
+        if not is_online:
+            return False
+        pending["resends"] += 1
+        seg, sid = pending["segment"], pending["seg_id"]
+        base.metrics_add(MODULE_NAME, "total_resent_segments", 1)
+        base.output_log(MODULE_NAME,
+            f"{TRIGGER_NAME} Resending Segment. seg_id={sid}  resend={pending['resends']}/{resend_max}", log_file)
+        res = _send_segment(seg, sid)
+        if res["status"] != "disconnected":
+            _log_result(sid, len(seg) if mode == "seg" else 1, res, pending["resends"])
+            pending = None
+            return True
+        if pending["resends"] >= resend_max:
+            ErrorIF.report_event({
+                "trigger_id": TRIGGER_NAME,
+                "phase"     : "loop",
+                "category"  : "comm",
+                "exc_type"  : "ResendLimitExceeded",
+                "message"   : f"Segment Dropped after {resend_max} resend(s). seg_id={sid}",
+            })
+            base.metrics_add(MODULE_NAME, "total_dropped_segments", 1)
+            base.output_log(MODULE_NAME,
+                f"WARNING  {TRIGGER_NAME} Segment Dropped after {resend_max} resend(s). seg_id={sid}", log_file)
+            pending = None
+            return True
+        return False
+
+    """======== LOOP START ========"""
     while True:
 
         """キュー受信"""
@@ -205,27 +401,11 @@ def _run_send_trigger(
             segment = post_queue.get(timeout=1.0)
 
         except queue.Empty:
-            # オフライン中はここで再接続を試みる（backgroundリトライ）
+            # オフライン中はここで再接続を試みる（backgroundリトライ）。再接続できたら再送待ちを先に送る
             if not is_online and (time.time() - last_reconnect_try) >= reconnect_interval_sec:
-                last_reconnect_try = time.time()
-                try:
-                    tcp_socket = _connect(server_ip, server_port, timeout_sec)
-                    is_online  = True
-                    reconnect_fail_count = 0
-                    base.output_log(MODULE_NAME, f"{TRIGGER_NAME} Reconnected. {server_ip}:{server_port}", log_file)
-                except Exception as e:
-                    reconnect_fail_count += 1
-                    ErrorIF.report_event({
-                        "trigger_id": TRIGGER_NAME,
-                        "phase"     : "loop",
-                        "category"  : "comm",
-                        "exc_type"  : type(e).__name__,
-                        "message"   : f"Re-Connect Failed ({reconnect_fail_count} times). {server_ip}:{server_port}",
-                        "signature" : _SIG_OFFLINE,
-                    })
-                    base.output_log(MODULE_NAME,
-                        f"{TRIGGER_NAME} Re-Connect Failed ({reconnect_fail_count}). "
-                        f"{server_ip}:{server_port}  ({type(e).__name__}: {e})", log_file)
+                _try_reconnect()
+            if is_online and pending is not None:
+                _flush_pending()
 
             if (stop_event.is_set() and
                     post_queue.qsize() == 0 and
@@ -233,8 +413,12 @@ def _run_send_trigger(
                 break
             continue
 
-        """sentinel → 終了"""
+        """sentinel → 終了（再送待ちがあれば、最後に1回だけ再接続・送り直しを試みる）"""
         if segment is None:
+            if pending is not None:
+                if not is_online:
+                    _try_reconnect()
+                _flush_pending()
             post_queue.task_done()
             break
 
@@ -266,11 +450,20 @@ def _run_send_trigger(
                     f"WARNING  空レコード。スキップ。 seg_id={seg_id}", log_file)
                 continue
 
+            """==== オフラインなら再接続の間隔ごとに再接続を試みる（セグメントが途切れず届く間も再接続できるように） ===="""
+            if not is_online and (time.time() - last_reconnect_try) >= reconnect_interval_sec:
+                _try_reconnect()
+
+            """==== 再送待ちを先に送る（オンラインなら。A-9） ===="""
+            if is_online and pending is not None:
+                _flush_pending()
+
             """==== オフライン時の処理 ===="""
             if not is_online:
 
                 if skip_on_offline:
                     skipped_seg_count += 1
+                    base.metrics_add(MODULE_NAME, "total_skipped_segments", 1)
                     base.output_log(MODULE_NAME,
                         f"WARNING  OFFLINE - Segment Skipped. "
                         f"seg_id={seg_id}  total_skipped={skipped_seg_count}  "
@@ -278,119 +471,25 @@ def _run_send_trigger(
                     continue
 
                 else:
-                    """ブロック待ち（停止チェック付き）"""
+                    """ブロック待ち（停止チェック付き）。再接続できたら再送待ちを先に送る"""
                     base.output_log(MODULE_NAME,
                         f"{TRIGGER_NAME} OFFLINE - Waiting for reconnect... seg_id={seg_id}", log_file)
-                    while not is_online and not stop_event.is_set():
-                        try:
-                            tcp_socket           = _connect(server_ip, server_port, timeout_sec)
-                            is_online            = True
-                            reconnect_fail_count = 0
-                            base.output_log(MODULE_NAME,
-                                f"{TRIGGER_NAME} Reconnected. {server_ip}:{server_port}", log_file)
-                        except Exception as e:
-                            reconnect_fail_count += 1
-                            base.output_log(MODULE_NAME,
-                                f"{TRIGGER_NAME} Re-Connect Failed ({reconnect_fail_count}). "
-                                f"Retry in {reconnect_interval_sec}s...", log_file)
+                    while not stop_event.is_set():
+                        if not is_online and not _try_reconnect():
                             _responsive_wait(reconnect_interval_sec)
+                            continue
+                        if _flush_pending() and is_online:
+                            break
 
                     if stop_event.is_set():
                         break
 
             """==== Sending ===="""
-            sent_count = 0
-            send_error = False
-
-            # ==== mode="seg": 全行送信 ====
-            if mode == "seg":
-                for row_num, row_val in enumerate(segment, start=1):
-
-                    """ dict -> JSON """
-                    row_dict = {col_keys[i]: row_val[i] for i in range(len(col_keys))}
-                    send_str = json.dumps(row_dict, ensure_ascii=False, default=str) + sep
-
-                    try:
-                        tcp_socket.sendall(("PUT" + sep).encode(encode))
-                        tcp_socket.sendall(send_str.encode(encode))
-
-                        """ACK: Wait for 'OK\n' """
-                        if ack_mode:
-                            ack_raw = tcp_socket.recv(chunk).decode(encode).strip()
-                            if ack_raw != "OK":
-                                base.output_log(MODULE_NAME,
-                                    f"{TRIGGER_NAME} ACK NG: seg_id={seg_id}  row={row_num}  ack={ack_raw!r}", log_file)
-
-                        sent_count += 1
-
-                    except Exception as e:
-                        _sig = ErrorIF.report_exception(
-                            e, phase="loop", category="comm",
-                            trigger_id=TRIGGER_NAME, log_file=log_file)
-
-                        if tcp_socket:
-                            try:   tcp_socket.close()
-                            except Exception: pass
-                        tcp_socket           = None
-                        is_online            = False
-                        reconnect_fail_count = 0
-                        last_reconnect_try   = time.time()
-
-                        base.output_log(MODULE_NAME,
-                            f"{TRIGGER_NAME} Connection Lost. to Offline. "
-                            f"seg_id={seg_id}  sent={sent_count}/{len(segment)}", log_file)
-
-                        if _sig == SIGNAL_STOP:
-                            stop_event.set()
-
-                        send_error = True
-                        break
-
-            # ==== mode="stat": 統計量1件送信 ====
+            res = _send_segment(segment, seg_id)
+            if res["status"] == "disconnected":
+                _hold_pending(segment, seg_id)   # 再接続後に最初の行から送り直す（A-9）
             else:
-                stats_dict = calc_stats(stats_ctx, segment, seg_id)
-                send_str = json.dumps(stats_dict, ensure_ascii=False, default=str) + sep
-
-                try:
-                    tcp_socket.sendall(("PUT" + sep).encode(encode))
-                    tcp_socket.sendall(send_str.encode(encode))
-
-                    """ACK: Wait for 'OK\n' """
-                    if ack_mode:
-                        ack_raw = tcp_socket.recv(chunk).decode(encode).strip()
-                        if ack_raw != "OK":
-                            base.output_log(MODULE_NAME,
-                                f"{TRIGGER_NAME} ACK NG (summary): seg_id={seg_id}  ack={ack_raw!r}", log_file)
-
-                    sent_count = 1
-
-                except Exception as e:
-                    _sig = ErrorIF.report_exception(
-                        e, phase="loop", category="comm",
-                        trigger_id=TRIGGER_NAME, log_file=log_file)
-
-                    if tcp_socket:
-                        try:   tcp_socket.close()
-                        except Exception: pass
-                    tcp_socket           = None
-                    is_online            = False
-                    reconnect_fail_count = 0
-                    last_reconnect_try   = time.time()
-
-                    base.output_log(MODULE_NAME,
-                        f"{TRIGGER_NAME} Connection Lost. to Offline. "
-                        f"seg_id={seg_id}  (stat mode)", log_file)
-
-                    if _sig == SIGNAL_STOP:
-                        stop_event.set()
-
-                    send_error = True
-
-            if not send_error:
-                base.output_log(MODULE_NAME,
-                    f"{TRIGGER_NAME} Segment Sent. "
-                    f"seg_id={seg_id}  mode={mode}  "
-                    f"sent={sent_count}  original_rows={len(segment)}", log_file)
+                _log_result(seg_id, len(segment) if mode == "seg" else 1, res)
 
         except Exception as e:
             _sig = ErrorIF.report_exception(e, phase="loop", category="data",
@@ -404,6 +503,11 @@ def _run_send_trigger(
             post_queue.task_done()
 
     """======== LOOP END ========"""
+    if pending is not None:
+        base.metrics_add(MODULE_NAME, "total_dropped_segments", 1)
+        base.output_log(MODULE_NAME,
+            f"WARNING  {TRIGGER_NAME} Stopped with a segment waiting for resend (dropped). seg_id={pending['seg_id']}", log_file)
+
     if tcp_socket:
         try:   tcp_socket.close()
         except Exception: pass

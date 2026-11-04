@@ -4,26 +4,21 @@
 """
 ########################################
 # Utility Module
-# Ver: 02.t.20261006    By: IWATA, Y.'s Agent AI
-# Mod: extra_col_def に dirpath（ファイルの親フォルダのパス。rel で何階層さかのぼるか指定）を追加
+# Ver: 02.w.20261102    By: IWATA, Y.'s Agent AI
+# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
 ########################################
-get_device_info_to_add    # device_key_to_add で指定された端末情報（device_info.json）のキーと値を返す
-get_make_subdir           # 元ファイルのパスから、copy / move 先に再現するフォルダ名（親側から指定階層分）を返す
-parse_dir_setting         # フォルダ設定（to_dir 等）を読む。数値なら col_def のインデックス（列の値をフォルダにする）
-get_dir_from_value        # 列の値からフォルダパスを取り出す（ファイルパスならそのフォルダ）
-resolve_smb_dir           # フォルダパスを SMB の UNC パスにする（相対パスは共有フォルダからの相対）
-replace_regex_str         # 正規表現で文字列を置換する
-check_ack_file_exists     # ACK ファイル（.done 等）の存在を確認する
-check_file_stability      # ファイルの更新時刻・サイズを確認して安定性をチェックする
-check_file_stability_retry# ファイル安定チェックを n 回リトライする
-list_files                # フォルダ内のファイルを接頭語・接尾語フィルタ付きで列挙する
-sanitize_str              # SQL インジェクション対策で識別子を安全化する
-save_json                 # オブジェクトを JSON ファイルに保存する
-initialize_db             # SQLite データベースを初期化・接続して返す（ディスク寿命対応）
-check_and_reconnect_db    # SQLite 接続の生存確認と再接続を行う
-check_record_exists       # SQLite テーブルに指定レコードが存在するか確認する
-insert_records_to_db      # SQLite テーブルに複数レコードを INSERT する
-parse_delimited_text      # CSV/TSV等の区切りテキストを標準ライブラリのみでパースし、レコードのリストを返す
+複数のトリガーで繰り返し使う、ファイル・フォルダ・SQLite・テキスト処理の部品集
+
+主要関数:
+list_files / check_file_stability_retry     # 対象のファイルを列挙し、書込みが終わったかを確かめる。
+parse_dir_setting / get_dir_from_value      # フォルダの設定（固定のパス、または列の値）を読む。
+get_make_subdir                             # copy / move 先に再現する元ファイルのフォルダ名を返す。
+parse_delimited_text                        # CSV・TSV 等の区切りテキストを読み、レコードのリストにする。
+resolve_extra_col_values                    # ファイル名・フォルダ名・端末情報などから、追加列の値を求める。
+initialize_db / insert_records_to_db        # SQLite の初期化と登録を行う。
+
+位置づけ: 特定の接続先に依存しない処理をまとめる。接続先ごとの処理は、各トリガーフォルダの tri_s19_*.py に置く。
+設計意図: 外部ライブラリを使わず標準ライブラリだけで実装し、どのトリガーからでも依存を増やさずに使えるようにする。
 """
 MODULE_NAME = "UTIL"
 
@@ -411,8 +406,15 @@ def load_json(
         return None
 
 
-def validate_extra_col_def(extra_col_def: Optional[List[Any]]) -> None:
-    """parse_delimited_text に渡す extra_col_def の構造を検証"""
+def validate_extra_col_def(
+    extra_col_def: Optional[List[Any]],
+    allowed_src  : Optional[Sequence[str]] = None,
+) -> None:
+    """
+    parse_delimited_text / resolve_extra_col_values に渡す extra_col_def の構造を検証
+    allowed_src: 使える src の種類（省略時は全種類）。ファイルを読まない Find（find_file 等）は header を除いて渡す
+    Mod: 2026.10.20    By: IWATA, Y.'s Agent AI（allowed_src を追加）
+    """
     if not extra_col_def:
         return
 
@@ -421,6 +423,9 @@ def validate_extra_col_def(extra_col_def: Optional[List[Any]]) -> None:
             raise ValueError(f"extra_col_def[{i}] は 'src' キーを持つ辞書で指定してください: {src!r}")
 
         src_type = src["src"]
+        if allowed_src is not None and src_type not in allowed_src:
+            raise ValueError(
+                f"extra_col_def[{i}] の src={src_type!r} はこの Find では使えません（使えるもの: {'/'.join(allowed_src)}）: {src!r}")
 
         if src_type == "header":
             loc_ = src.get("loc")
@@ -458,6 +463,132 @@ def validate_extra_col_def(extra_col_def: Optional[List[Any]]) -> None:
                 f"extra_col_def[{i}] の src={src_type!r} は非対応です（header/device/const/filename/dirname/dirpath のいずれか）: {src!r}")
 
     return None
+
+
+def resolve_extra_col_values(
+    file_path        : str,
+    extra_col_def    : Optional[List[Any]],
+    extra_col_default: Any = "__",
+    all_rows         : Optional[List[List[Any]]] = None,
+) -> List[Any]:
+    """
+    extra_col_def の並び順に、追加列の値を求めて返す（parse_delimited_text の「全レコード共通の値」を切り出したもの）
+    src の種類と値の求め方は parse_delimited_text の docstring を参照
+    all_rows: header（ファイル内のセル）を使う場合の、読み込んだ全行。ファイルを読まない Find は None を渡し、
+              header は validate_extra_col_def(allowed_src=...) で起動時に使えないようにしておく
+              （None のまま header が来た場合は、範囲外と同じく default を使う）
+    取得失敗時はログに出力し、その要素の "default"（無ければ extra_col_default）で継続する
+    Mod: 2026.10.20    By: IWATA, Y.'s Agent AI（parse_delimited_text から切り出し。find_file からも使う）
+    """
+    extra_vals: List[Any] = []
+    if not extra_col_def:
+        return extra_vals
+
+    all_rows = all_rows if all_rows is not None else []
+    device_info = base.load_device_info()
+    fname = os.path.basename(file_path)
+    dir_parts = os.path.normpath(os.path.dirname(file_path)).split(os.sep)
+
+    for src in extra_col_def:
+        if not isinstance(src, dict) or "src" not in src:
+            raise ValueError(f"extra_col_def の要素は 'src' キーを持つ辞書で指定してください: {src!r}")
+
+        src_type   = src["src"]
+        col_default = src["default"] if "default" in src else extra_col_default
+
+        # ファイル内セルの値（ヘッダー等）
+        if src_type == "header":
+            r_idx, c_idx = src["loc"]
+            try:
+                extra_vals.append(all_rows[r_idx][c_idx])
+            except IndexError:
+                base.output_log(
+                    MODULE_NAME,
+                    f"extra_col_def(header) のセル位置 loc=[{r_idx},{c_idx}] が範囲外のため "
+                    f"default={col_default!r} を使用します: {file_path}", log_file)
+                extra_vals.append(col_default)
+
+        # device_info.json の値
+        elif src_type == "device":
+            key = src["key"]
+            if key not in device_info:
+                base.output_log(
+                    MODULE_NAME,
+                    f"extra_col_def(device) の key={key!r} が device_info.json にないため "
+                    f"default={col_default!r} を使用します（利用可能なキー={list(device_info.keys())}）: "
+                    f"{file_path}", log_file)
+                extra_vals.append(col_default)
+            else:
+                extra_vals.append(device_info[key])
+
+        # 定数値
+        elif src_type == "const":
+            extra_vals.append(src.get("default"))
+
+        # ファイル名から抽出
+        elif src_type == "filename":
+            try:
+                if "pos" in src:
+                    start, end = src["pos"]
+                    if start < 0 or end < start:
+                        raise ValueError(f"invalid pos={src['pos']}")
+                    value = fname[start:end + 1]
+                    if value == "":
+                        raise ValueError(f"pos={src['pos']} out of range for filename={fname!r}")
+
+                elif "delimiter" in src and "index" in src:
+                    idx = src["index"]
+                    if idx < 0:
+                        raise ValueError(f"invalid index={idx}")
+                    value = fname.split(src["delimiter"])[idx]
+
+                else:
+                    raise ValueError(f"invalid filename spec: {src}")
+
+                extra_vals.append(value)
+
+            except (IndexError, ValueError) as e:
+                base.output_log(
+                    MODULE_NAME,
+                    f"extra_col_def(filename) の抽出({src})に失敗したため "
+                    f"default={col_default!r} を使用します（filename={fname!r}）: {e}: {file_path}", log_file)
+                extra_vals.append(col_default)
+
+        # ファイルが置かれているディレクトリパスから抽出
+        elif src_type == "dirname":
+            try:
+                rel = src["rel"]
+                idx = rel - 1
+                extra_vals.append(dir_parts[idx])
+            except IndexError:
+                base.output_log(
+                    MODULE_NAME,
+                    f"extra_col_def(dirname) の rel={src.get('rel')} が範囲外のため "
+                    f"default={col_default!r} を使用します（dir_parts={dir_parts}）: {file_path}", log_file)
+                extra_vals.append(col_default)
+
+        # ファイルの親フォルダのパス（rel 階層さかのぼる）
+        elif src_type == "dirpath":
+            folder = os.path.dirname(os.path.abspath(file_path))
+            for _ in range(-int(src["rel"])):
+                parent = os.path.dirname(folder)
+                if parent == folder: # ルートより上は範囲外
+                    folder = None
+                    break
+                folder = parent
+            if folder is None:
+                base.output_log(
+                    MODULE_NAME,
+                    f"extra_col_def(dirpath) の rel={src.get('rel')} が範囲外のため "
+                    f"default={col_default!r} を使用します: {file_path}", log_file)
+                extra_vals.append(col_default)
+            else:
+                extra_vals.append(folder)
+
+        else:
+            raise ValueError(f"extra_col_def の src={src_type!r} は非対応です: {src!r}")
+
+    return extra_vals
 
 
 def parse_delimited_text(
@@ -508,110 +639,7 @@ def parse_delimited_text(
         raise ValueError(f"Encode NOT Match in {list(encodings)} or Invalid Format: {file_path}") from error
 
     """ 2. 全レコード共通（ヘッダー値など）を解決 """
-    extra_vals: List[Any] = []
-    if extra_col_def:
-        device_info = base.load_device_info()
-        fname = os.path.basename(file_path)
-        dir_parts = os.path.normpath(os.path.dirname(file_path)).split(os.sep)
-
-        for src in extra_col_def:
-            if not isinstance(src, dict) or "src" not in src:
-                raise ValueError(f"extra_col_def の要素は 'src' キーを持つ辞書で指定してください: {src!r}")
-
-            src_type   = src["src"]
-            col_default = src["default"] if "default" in src else extra_col_default
-
-            # ファイル内セルの値（ヘッダー等）
-            if src_type == "header":
-                r_idx, c_idx = src["loc"]
-                try:
-                    extra_vals.append(all_rows[r_idx][c_idx])
-                except IndexError:
-                    base.output_log(
-                        MODULE_NAME,
-                        f"extra_col_def(header) のセル位置 loc=[{r_idx},{c_idx}] が範囲外のため "
-                        f"default={col_default!r} を使用します: {file_path}", log_file)
-                    extra_vals.append(col_default)
-
-            # device_info.json の値
-            elif src_type == "device":
-                key = src["key"]
-                if key not in device_info:
-                    base.output_log(
-                        MODULE_NAME,
-                        f"extra_col_def(device) の key={key!r} が device_info.json にないため "
-                        f"default={col_default!r} を使用します（利用可能なキー={list(device_info.keys())}）: "
-                        f"{file_path}", log_file)
-                    extra_vals.append(col_default)
-                else:
-                    extra_vals.append(device_info[key])
-
-            # 定数値
-            elif src_type == "const":
-                extra_vals.append(src.get("default"))
-
-            # ファイル名から抽出
-            elif src_type == "filename":
-                try:
-                    if "pos" in src:
-                        start, end = src["pos"]
-                        if start < 0 or end < start:
-                            raise ValueError(f"invalid pos={src['pos']}")
-                        value = fname[start:end + 1]
-                        if value == "":
-                            raise ValueError(f"pos={src['pos']} out of range for filename={fname!r}")
-
-                    elif "delimiter" in src and "index" in src:
-                        idx = src["index"]
-                        if idx < 0:
-                            raise ValueError(f"invalid index={idx}")
-                        value = fname.split(src["delimiter"])[idx]
-
-                    else:
-                        raise ValueError(f"invalid filename spec: {src}")
-
-                    extra_vals.append(value)
-
-                except (IndexError, ValueError) as e:
-                    base.output_log(
-                        MODULE_NAME,
-                        f"extra_col_def(filename) の抽出({src})に失敗したため "
-                        f"default={col_default!r} を使用します（filename={fname!r}）: {e}: {file_path}", log_file)
-                    extra_vals.append(col_default)
-
-            # ファイルが置かれているディレクトリパスから抽出
-            elif src_type == "dirname":
-                try:
-                    rel = src["rel"]
-                    idx = rel - 1
-                    extra_vals.append(dir_parts[idx])
-                except IndexError:
-                    base.output_log(
-                        MODULE_NAME,
-                        f"extra_col_def(dirname) の rel={src.get('rel')} が範囲外のため "
-                        f"default={col_default!r} を使用します（dir_parts={dir_parts}）: {file_path}", log_file)
-                    extra_vals.append(col_default)
-
-            # ファイルの親フォルダのパス（rel 階層さかのぼる）
-            elif src_type == "dirpath":
-                folder = os.path.dirname(os.path.abspath(file_path))
-                for _ in range(-int(src["rel"])):
-                    parent = os.path.dirname(folder)
-                    if parent == folder: # ルートより上は範囲外
-                        folder = None
-                        break
-                    folder = parent
-                if folder is None:
-                    base.output_log(
-                        MODULE_NAME,
-                        f"extra_col_def(dirpath) の rel={src.get('rel')} が範囲外のため "
-                        f"default={col_default!r} を使用します: {file_path}", log_file)
-                    extra_vals.append(col_default)
-                else:
-                    extra_vals.append(folder)
-
-            else:
-                raise ValueError(f"extra_col_def の src={src_type!r} は非対応です: {src!r}")
+    extra_vals = resolve_extra_col_values(file_path, extra_col_def, extra_col_default, all_rows)
 
     """ 3. データ本体行を抽出 """
     records = [row + extra_vals for row in all_rows[data_start_row:]]
@@ -659,19 +687,18 @@ def get_make_subdir(src_path: str, levels: int) -> List[str]:
 
 def parse_dir_setting(config: Dict[str, Any], key: str, n_col_def: int) -> Tuple[str, Optional[int]]:
     """
-    フォルダ設定（to_dir / move_to / remote_dir）を読む
+    フォルダ設定（to_dir / move_to / remote_dir / file_search_dir）を読む
       文字列 → (フォルダパス, None)
-      数値   → ("", col_def のインデックス)（行ごとに、その列の値をフォルダとして使う）
-    true / false・小数・範囲外のインデックスは ValueError
-    Mod: 2026.10.06    By: IWATA, Y.'s Agent AI
+      整数   → ("", 行の中の位置)（Find と同じ列番号で書く。行ごとに、その列の値をフォルダとして使う）
+    n_col_def: Act に渡される col_def の列数（固定4列 + Find の列）
+    true / false・小数・範囲外の列番号は ValueError
+    Mod: 2026.10.21    By: IWATA, Y.'s Agent AI（列番号を Find と同じ番号で書くように変更。変換は base.resolve_act_col）
     """
     v = config.get(key, "")
     if isinstance(v, (bool, float)):
-        raise ValueError(f"config[{key!r}] must be a folder path (string) or a col_def index (int). Got: {v!r}")
+        raise ValueError(f"config[{key!r}] must be a folder path (string) or a Find column index (int). Got: {v!r}")
     if isinstance(v, int):
-        if not (0 <= v < n_col_def):
-            raise ValueError(f"config[{key!r}]={v} (col_def index) out of range (0-{n_col_def - 1})")
-        return "", v
+        return "", base.resolve_act_col(v, range(n_col_def), key)
     return ("" if v is None else str(v).strip()), None
 
 

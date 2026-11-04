@@ -4,42 +4,19 @@
 """
 ########################################
 # MQTT 通信ユーティリティモジュール
-# Ver: 01.e.20261001    By: IWATA, Y.'s Agent AI
-# Mod: モジュール名を tri_edge_XX_* から tri_sXX_* 形式に変更（tri_edge_19_mqtt → tri_s19_mqtt）
+# Ver: 01.f.20261102    By: IWATA, Y.'s Agent AI
+# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
 ########################################
-start_embedded_broker  # amqtt 組込みブローカーをバックグラウンドスレッドで起動する
-build_mqtt_client      # paho-mqtt クライアントを生成・設定して返す（v1.x/v2.x 両対応）
-parse_payload          # MQTT ペイロードバイト列を設定に従いデコード・パースする
-teardown_client        # paho クライアントのループを停止して切断する
+MQTT の Find と Act が共通で使う、ブローカー・クライアント・受信データ処理の部品集
 
-動作概要
-    find_trigger / act_trigger が共有する MQTT 通信処理のユーティリティ集。
-    1. start_embedded_broker : amqtt ブローカーを asyncio スレッドで起動し、
-       broker_ready イベントが立つまで待てるようにする
-    2. build_mqtt_client     : paho-mqtt v1.x / v2.x の差異を吸収しつつ、
-       TLS・認証・コールバックを設定した Client を返す
-    3. parse_payload         : JSON / raw の 2 フォーマットに対応し、
-       payload_key 指定時は JSON オブジェクトから値を抽出する
-    4. teardown_client       : loop_stop → disconnect を安全に実行する
+主要関数:
+start_embedded_broker  # 組込みブローカー（amqtt）をバックグラウンドのスレッドで起動する。
+build_mqtt_client      # TLS・認証・コールバックを設定した paho-mqtt クライアントを返す。
+parse_payload          # 受信データを JSON または raw として読み、必要な値を取り出す。
+teardown_client        # クライアントのループを止めて切断する。
 
-接続設定パラメータ（build_mqtt_client）
-    client_id  : クライアント ID（空文字列で自動生成）
-    username   : 認証ユーザー名（None で認証なし）
-    password   : 認証パスワード
-    tls_enable : TLS を有効にするか（デフォルト: False）
-    tls_ca_cert: CA 証明書の絶対パス（tls_enable=True 時に使用）
-    tls_certfile: クライアント証明書の絶対パス（省略可）
-    tls_keyfile : クライアント秘密鍵の絶対パス（省略可）
-    tls_insecure: サーバ証明書のホスト検証を無効化（デフォルト: False）
-    on_connect    : on_connect コールバック（省略可）
-    on_disconnect : on_disconnect コールバック（省略可）
-    on_message    : on_message コールバック（省略可）
-
-parse_payload パラメータ
-    raw_bytes      : MQTT ペイロードのバイト列
-    payload_format : "json" または "raw"
-    payload_key    : JSON から抽出するキー名（省略可）
-    encode         : 文字エンコーディング（デフォルト: "utf-8"）
+位置づけ: tri_s11_find_mqtt と tri_s12_act_mqtt から呼ばれる。
+設計意図: paho-mqtt の v1.x と v2.x の違いをここで吸収し、トリガー側がバージョンを意識しなくてよいようにする。外部のブローカーが無い環境でも、組込みブローカーで動かせるようにする。
 """
 MODULE_NAME = "UTIL_MQTT"
 

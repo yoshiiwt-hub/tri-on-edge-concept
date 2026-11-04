@@ -4,90 +4,17 @@
 """
 ########################################
 # Find Trigger [MQTT]
-# Ver: 01.j.20261005    By: IWATA, Y.'s Agent AI
-# Mod: 初回接続の失敗を ErrorIF へ報告（phase=startup / category=comm。A-21）
+# Ver: 01.k.20261102    By: IWATA, Y.'s Agent AI
+# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
 ########################################
-f_find_mqtt_trigger  # MQTT ブローカーからメッセージを受信し、キューに流す
+MQTT のトピックに届く値を、列にまとめて取り込む入口
 
-■ 動作概要
-    1. broker_mode が "embedded" の場合、amqtt ベースの組込み MQTT ブローカーを
-       バックグラウンドスレッド（asyncio ループ）で起動する
-    2. paho-mqtt クライアントでブローカーに接続し、topic_map で定義したトピックを Subscribe
-    3. 受信メッセージで current_values の対応列を更新する（コールバック）
-    4. polling_ms ごとに current_values の全列を queue_out に送出（ポーリングモード）
-       push_mode=true の場合は受信のたびに即座に queue_out に送出
-    5. 通信失敗時はオフラインモードへ移行し、reconnect_interval_sec 秒ごとに自動再接続
-    6. stop_event が立つまでループを継続し、終了時にブローカー・クライアントをクリーンアップ
+主要関数:
+f_find_mqtt_trigger  # MQTT ブローカーからメッセージを受信し、キューに流す。
 
-■ topic_map フォーマット
-    {"col_idx": トピック指定}
-    col_idx は column の index（0始点）に一致させること。トピック指定は2通り：
-      文字列: "topic/string"
-          従来形式。そのトピックの値をそのままこの列に格納する（payload_keyはグローバル設定を使う）
-          例: {"0": "sensor/temp", "1": "sensor/humid"}  ← 1トピック=1列（値ごとに独立したトピック）
-      辞書  : {"topic": "topic/string", "payload_key": "キー名"}
-          1つのトピックに複数の値がJSONでまとまって届く場合、複数の col_idx から
-          同じ topic を指定し、それぞれ異なる payload_key で値を取り出せる
-          （payload_key省略時はグローバル設定を使う）
-          例: セグメント全体を1トピックにJSONでPublishする相手（act_mqtt.pyのa_mqtt_pub_seg_trigger等）
-              から受信する場合:
-              {
-                "0": {"topic": "triedge/segment/out", "payload_key": "Timestamp"},
-                "1": {"topic": "triedge/segment/out", "payload_key": "LOT"},
-                "2": {"topic": "triedge/segment/out", "payload_key": "Sin"}
-              }
-              ← 1トピック（設定・グループ単位）に複数列をまとめて割り当てる
-
-■ payload フォーマット（payload_format）
-    "json"      : JSON ペイロードをパース。payload_key を指定するとその値を抽出。
-                  例: payload='{"value": 1.23}' + payload_key="value" → 1.23
-                  payload_key 省略時は JSON テキストを文字列としてそのまま格納
-    "raw"       : ペイロードをデコード文字列としてそのまま格納
-    "json_rows" : 1メッセージに複数行がJSON配列でまとまっている形式を受信する
-                  （act_mqtt.py の publish_mode="segment" で送られたメッセージ等）。
-                  payload = {"rows": [{...}, {...}, ...]} または [{...}, {...}, ...]（直接配列）
-                  rows_key（デフォルト"rows"）で配列を取り出すキー名を指定する。
-                  配列の各要素（行オブジェクト）から、topic_mapのpayload_keyで指定した
-                  フィールドを取り出し、1行ずつ順番にpush_queueへ送る。
-                  ※ push_mode=true が必須（順序通りに個別処理する必要があるため）
-
-■ 接続設定（共通）
-    broker_mode            : "external"（外部ブローカー）or "embedded"（組込みブローカー）
-                             デフォルト: "external"
-    broker_host            : 接続先ブローカーホスト（broker_mode="external" 時。デフォルト: "127.0.0.1"）
-    broker_port            : MQTT ブローカーポート（デフォルト: 1883）
-    client_id              : クライアントID（省略時は自動生成）
-    username               : 認証ユーザー名（省略可）
-    password               : 認証パスワード（省略可）
-    keepalive              : キープアライブ秒（デフォルト: 60）
-    qos                    : QoS レベル（0/1/2, デフォルト: 0）
-    reconnect_interval_sec : 再接続試行間隔秒（デフォルト: 10.0）
-    tls_enable             : TLS 接続を有効にするか（デフォルト: false）
-    tls_ca_cert            : TLS CA 証明書パス（システムルート相対。tls_enable=true 時に有効）
-    tls_certfile           : TLS クライアント証明書パス（システムルート相対。省略可）
-    tls_keyfile            : TLS クライアント秘密鍵パス（システムルート相対。省略可）
-    tls_insecure           : サーバ証明書のホスト検証を無効化（デフォルト: false）
-
-■ 組込みブローカー設定（broker_mode="embedded"）
-    broker_port            : 組込みブローカーの待ち受けポート（デフォルト: 1883）
-    embedded_allow_anonymous : 匿名接続を許可するか（デフォルト: true）
-
-■ 受信設定
-    topic_map              : 列インデックス（str） → トピック のマッピング（必須）
-    polling_ms             : ポーリング間隔ミリ秒（デフォルト: 100）
-    push_mode              : true=受信のたびに即時 queue_out 送出（デフォルト: false）
-    payload_format         : "json" or "raw" or "json_rows"（デフォルト: "json"）
-    payload_key            : JSON から抽出するキー名（省略可。json_rows時は各エントリの
-                              payload_keyがそのまま行オブジェクト内のフィールド名になる）
-    rows_key                : payload_format="json_rows" 時、配列を取り出すキー名（デフォルト: "rows"）
-    encode                 : ペイロードのエンコーディング（デフォルト: "utf-8"）
-
-■ dtype cast 設定（省略時は既定値）
-    time_format            : 時刻文字列フォーマット（デフォルト: "%Y-%m-%d %H:%M:%S.%f"）
-    time_default           : 時刻変換失敗時の値（デフォルト: "2999-01-01 00:00:00.000000"）
-    int_default            : int 変換失敗時の値（デフォルト: -9999）
-    float_default          : float 変換失敗時の値（デフォルト: -9999.9）
-    str_default            : str 変換失敗時の値（デフォルト: "__"）
+位置づけ: センサーや他システムが MQTT で送る値を受け取る。通信の部品は tri_s19_mqtt を使い、tri_s12_act_mqtt が送ったセグメントも受け取れる。
+設計意図: 1トピック = 1列の形と、1トピックに JSON でまとめて届く形の両方を、topic_map の書き方だけで扱えるようにする。外部のブローカーが無い現場でも、組込みブローカーで動かせるようにする。
+前提・制約: 受信した最新値を polling_ms ごとに送る（push_mode=true なら受信のたびに送る）。payload_format="json_rows" は push_mode=true が必須。
 """
 MODULE_NAME = "FIND_MQTT"
 

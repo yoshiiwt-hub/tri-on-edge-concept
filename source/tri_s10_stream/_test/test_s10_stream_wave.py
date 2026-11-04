@@ -4,8 +4,8 @@
 """
 ########################################
 # Unit Test [Wave Cutout / Wave Stats]
-# Ver: 01.b.20261012    By: IWATA, Y.'s Agent AI
-# Mod: ファイル名を test_cutout_stats.py から test_s10_stream_wave.py に変更（対象モジュール tri_s10_stream_wave_* に合わせる）
+# Ver: 01.d.20261025    By: IWATA, Y.'s Agent AI
+# Mod: seg_ts・seg_id がレコードの時刻から作られること、同じ時刻でも seg_id が重複しないことの確認を追加（A-7）
 ########################################
 波形切出し（tri_s10_stream_wave_cutout）と統計量（tri_s10_stream_wave_stat）の単体テスト
 他のモジュール（find / act / error_if）には依存しない。
@@ -19,7 +19,7 @@ import os
 import sys
 import tempfile
 import unittest
-from   datetime import datetime as dt
+from   datetime import datetime as dt, timedelta
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # tri_s10_stream/（src の親）
 if ROOT not in sys.path:
@@ -32,9 +32,10 @@ import src.tri_s10_stream_wave_stat   as stat
 ########################################
 # helper
 ########################################
-def run_cutout(values, seg_start, seg_end, seg_max_rows=0, seg_max_sec=0.0):
+def run_cutout(values, seg_start, seg_end, seg_max_rows=0, seg_max_sec=0.0, times=None, ts_round_ms=0):
     """
     values（1レコード分の値のリストを並べたもの）を順に流し、切り出されたセグメントを返す
+    times: 各レコードの時刻（省略時は dt.now()。StreamCore の record[0] に当たる）
     戻り値: [(セグメント（行のリスト）, 強制クローズか), ...]
     セグメントの行: [seg_id, seg_ind, seg_ts, 0] + 値
     """
@@ -49,10 +50,10 @@ def run_cutout(values, seg_start, seg_end, seg_max_rows=0, seg_max_sec=0.0):
     buf, prev_values, prev_status, seg_range, progress = [], None, 0, [None, None], {}
     seg_id = seg_ind = 0
     for i, v in enumerate(values):
-        record = [dt.now(), i + 1, list(v)]
+        record = [times[i] if times else dt.now(), i + 1, list(v)]
         seg_id, seg_ind, prev_values, prev_status, seg_range = cutout.process_stream_record(
             seg_id, seg_ind, record, buf, on_cutout_segment, prev_values, prev_status, seg_range,
-            (start, end), cutout.TRANS_TABLE, progress, 0)
+            (start, end), cutout.TRANS_TABLE, progress, ts_round_ms)
     return out
 
 
@@ -119,12 +120,44 @@ class TestWaveCutout(unittest.TestCase):
         self.assertTrue(cutout.cond_change("A", 0, 0, "B", [], None))
         self.assertFalse(cutout.cond_change("A", 0, 0, "A", [], None))
 
+    def test_seg_ts_and_seg_id_come_from_record_time(self):
+        # seg_ts は各レコードの時刻（ts_round_ms で切り捨て）、seg_id は開始レコードの時刻（A-7）
+        t0 = dt(2026, 10, 25, 9, 0, 0, 123456)
+        times = [t0 + timedelta(milliseconds=250 * i) for i in range(6)]
+        segs = run_cutout([[0], [1], [1], [1], [0], [0]], START_EQ_1, END_EQ_0, times=times, ts_round_ms=100)
+        seg, _ = segs[0]
+        self.assertEqual([r[2] for r in seg], ["2026-10-25 09:00:00.300000", "2026-10-25 09:00:00.600000",
+                                               "2026-10-25 09:00:00.800000", "2026-10-25 09:00:01.100000"])
+        self.assertEqual(seg[0][0], 2026102509000030)                   # 開始レコード（09:00:00.373456 → .300000）
+
+    def test_seg_id_never_repeats_even_with_same_time(self):
+        # 同じ時刻（10ms 内）に次々とセグメントが始まっても seg_id は重複せず増える（STQ の (seg_id, seg_ind) 重複を防ぐ）
+        t = dt(2026, 10, 25, 9, 0, 0, 5000)
+        values = [[0], [1], [0], [1], [0], [1], [0]]                     # 1行ずつのセグメントが3つ
+        segs = run_cutout(values, START_EQ_1, END_EQ_0, times=[t] * len(values))
+        ids = [s[0][0] for s, _ in segs]
+        self.assertEqual(ids, [2026102509000000, 2026102509000001, 2026102509000002])
+        # 時刻が戻っても前の seg_id より大きくなる
+        back = [t, t, t - timedelta(seconds=1), t - timedelta(seconds=1)]
+        segs = run_cutout([[0], [1], [0], [1]], START_EQ_1, END_EQ_0, times=back)
+        self.assertEqual([s[0][0] for s, _ in segs], [2026102509000000])  # 2つ目は未完了
+        cutout.init_state(cutout.wrap_spec(START_EQ_1), cutout.wrap_spec(END_EQ_0))
+        self.assertEqual(cutout.LAST_SEG_ID, 0)                          # init_state で初期化される
+
+    def test_end_equals_start_gets_new_seg_id(self):
+        # 終点＝開始点（change → change）でも、次のセグメントの seg_id は前より大きい
+        change = {"method": "change", "target_loc": 0}
+        t = dt(2026, 10, 25, 9, 0, 0)
+        segs = run_cutout([["A"], ["B"], ["B"], ["C"], ["C"], ["D"]], change, change, times=[t] * 6)
+        ids = [s[0][0] for s, _ in segs]
+        self.assertTrue(len(ids) >= 2 and ids == sorted(set(ids)))
+
 
 ########################################
 # 統計量
 ########################################
 def make_segment(col4, col5):
-    """行: [seg_id, seg_ind, seg_ts, 0, 列4, 列5]"""
+    """行: [seg_id, seg_ind, seg_ts, 0, name, val]（column_register_map では Find の列番号 name=0 / val=1 で指定する）"""
     return [[20261012000000, i + 1, f"2026-10-12 00:00:0{i}.000000", 0, a, b]
             for i, (a, b) in enumerate(zip(col4, col5))]
 
@@ -146,9 +179,9 @@ class TestWaveStats(unittest.TestCase):
 
     def test_basic_stats(self):
         comp = compile_specs([
-            ("mean", [5, "mean"]), ("min", [5, "min"]), ("max", [5, "max"]), ("std", [5, "std"]),
-            ("count", [5, "count"]), ("sum", [5, "sum"]), ("range", [5, "range"]),
-            ("med", [5, "med"]), ("iqr", [5, "iqr"]),
+            ("mean", [1, "mean"]), ("min", [1, "min"]), ("max", [1, "max"]), ("std", [1, "std"]),
+            ("count", [1, "count"]), ("sum", [1, "sum"]), ("range", [1, "range"]),
+            ("med", [1, "med"]), ("iqr", [1, "iqr"]),
         ])
         r = stat.build_stats(self.seg, comp)
         self.assertEqual(r["seg_id"], 20261012000000)
@@ -167,11 +200,11 @@ class TestWaveStats(unittest.TestCase):
 
     def test_param_stats(self):
         comp = compile_specs([
-            ("pertl25", [5, "pertl", 25]),
-            ("sig_u",   [5, "sig_u", 1]),
-            ("sig_l",   [5, "sig_l", 1]),
-            ("nth2",    [5, "nth", 2]),
-            ("nth_last", [5, "nth", -1]),
+            ("pertl25", [1, "pertl", 25]),
+            ("sig_u",   [1, "sig_u", 1]),
+            ("sig_l",   [1, "sig_l", 1]),
+            ("nth2",    [1, "nth", 2]),
+            ("nth_last", [1, "nth", -1]),
         ])
         r = stat.build_stats(self.seg, comp)
         self.assertAlmostEqual(r["pertl25"], 17.5, places=4)
@@ -182,8 +215,8 @@ class TestWaveStats(unittest.TestCase):
 
     def test_raw_value_stats_accept_any_type(self):
         comp = compile_specs([
-            ("first", [4, "first"]), ("last", [4, "last"]), ("mode", [4, "mode"]),
-            ("n_null", [4, "n_null"]),
+            ("first", [0, "first"]), ("last", [0, "last"]), ("mode", [0, "mode"]),
+            ("n_null", [0, "n_null"]),
         ])
         r = stat.build_stats(self.seg, comp)
         self.assertEqual(r["first"], "a")        # 文字列の列でも、そのまま返す
@@ -199,12 +232,12 @@ class TestWaveStats(unittest.TestCase):
 
     def test_slice_uses_part_of_segment(self):
         # 後半（50%〜100%）= 30, 40 の平均
-        comp = compile_specs([("mean_late", [5, "mean", [0.5, 1.0]])])
+        comp = compile_specs([("mean_late", [1, "mean", [0.5, 1.0]])])
         self.assertAlmostEqual(stat.build_stats(self.seg, comp)["mean_late"], 35.0, places=4)
 
     def test_warn_when_value_not_available(self):
         # 文字列の列の平均は出せない → 値のキーは出さず、{名前}_WARN に理由を残す
-        comp = compile_specs([("mean_name", [4, "mean"])])
+        comp = compile_specs([("mean_name", [0, "mean"])])
         r = stat.build_stats(self.seg, comp)
         self.assertNotIn("mean_name", r)
         self.assertEqual(r["mean_name_WARN"], "no_valid_values")
@@ -212,20 +245,40 @@ class TestWaveStats(unittest.TestCase):
     def test_compile_errors(self):
         oc = {"0": ["x", "float", "num", "obj", ""]}
         with self.assertRaises(ValueError):                                  # 未知の統計量
-            stat.compile_register_map({"0": [5, "nope"]}, oc, C_KEYS)
+            stat.compile_register_map({"0": [1, "nope"]}, oc, C_KEYS)
         with self.assertRaises(ValueError):                                  # 列番号が範囲外
             stat.compile_register_map({"0": [99, "mean"]}, oc, C_KEYS)
         with self.assertRaises(ValueError):                                  # 2つの定義のキーが不一致
-            stat.compile_register_map({"0": [5, "mean"], "1": [5, "max"]}, oc, C_KEYS)
+            stat.compile_register_map({"0": [1, "mean"], "1": [1, "max"]}, oc, C_KEYS)
         with self.assertRaises(ValueError):                                  # pertl の p が不正
-            stat.compile_register_map({"0": [5, "pertl", 33]}, oc, C_KEYS)
+            stat.compile_register_map({"0": [1, "pertl", 33]}, oc, C_KEYS)
         with self.assertRaises(ValueError):                                  # nth の n が 0
-            stat.compile_register_map({"0": [5, "nth", 0]}, oc, C_KEYS)
+            stat.compile_register_map({"0": [1, "nth", 0]}, oc, C_KEYS)
+        with self.assertRaises(ValueError):                                  # Find の列番号の範囲外（Find の列は 0～1）
+            stat.compile_register_map({"0": [2, "mean"]}, oc, C_KEYS)
+        with self.assertRaises(ValueError):                                  # 固定4列以外の名前
+            stat.compile_register_map({"0": ["name", "mean"]}, oc, C_KEYS)
+
+    def test_find_column_index_and_seg_header_names(self):
+        # 列番号は Find と同じ番号（name=0 / val=1）、先頭の固定4列は名前で指定する
+        comp = compile_specs([("val_first", [1, "first"]), ("name_last", ["0", "last"]),
+                              ("seg_id", ["seg_id", "first"]), ("ind_last", ["seg_ind", "last"]),
+                              ("ts_first", ["seg_ts", "first"]), ("status", ["seg_status", "mode"]),
+                              ("rows", [-1, "seg_len"]), ("c", [-1, "const", "X"])])
+        r = stat.build_stats(self.seg, comp)
+        self.assertEqual(r["val_first"], 10)
+        self.assertEqual(r["name_last"], "c")
+        self.assertEqual(r["seg_id"], 20261012000000)
+        self.assertEqual(r["ind_last"], 4)
+        self.assertEqual(r["ts_first"], "2026-10-12 00:00:00.000000")
+        self.assertEqual(r["status"], 0)
+        self.assertEqual(r["rows"], 4)
+        self.assertEqual(r["c"], "X")
 
     def test_init_stats_and_calc_stats(self):
         col_def = {i: [name, "str", "key", "key", ""] for i, name in enumerate(C_KEYS)}
         config = {
-            "column_register_map": {"0": [5, "mean"], "1": [4, "mean"]},
+            "column_register_map": {"0": [1, "mean"], "1": [0, "mean"]},
             "out_coldef": {"0": ["val_mean", "float", "num", "obj", ""],
                            "1": ["name_mean", "float", "num", "obj", ""]},
         }

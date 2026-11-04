@@ -4,29 +4,17 @@
 """
 ########################################
 # Act Trigger Module [Tkinter Viz - Graph]
-# Ver: 02.a.20261004    By: IWATA, Y.'s Agent AI
-# Mod: 終点行の除外を各 Act の [:-1] から core へ移し、CUT_LAST_ROW 属性で宣言する形に変更（B-2）
+# Ver: 02.c.20261102    By: IWATA, Y.'s Agent AI
+# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
 ########################################
-a_viz_graph_trigger
+セグメントの波形を、ウィンドウにリアルタイムで描く表示の雛形
 
-動作概要
-    1. 起動時にtkinterウィンドウを作成
-    2. セグメントを受信するたびに、val_col_idx で指定した列の値を折れ線グラフとして描画
-    3. セグメント受信のたびに root.update() でイベントを処理する。mainloop()はキュー受信をブロッキングするため使用しない。
-    4. ウィンドウを閉じられた場合は、停止制御ファイルを作成し、本体（stream_core）にGently Stopを要求。
-    5. stop_event が立ったら、ウィンドウを破棄してループを終了
+主要関数:
+a_viz_graph_trigger  # 指定した列の波形を、直近のセグメントと重ねてウィンドウに描く。
 
-接続設定
-    val_col_idx    : 表示対象の列インデックス（必須。col_defの並びを指定。segment_header分は自動的に加算）
-    window_title   : ウィンドウタイトル
-    window_w       : ウィンドウ幅
-    window_h       : ウィンドウ高さ
-    margin         : プロット領域の余白px
-    max_overlay    : 描画する直近セグメント数
-    line_color     : 最新セグメントの線色
-    overlay_color  : 重ね描きする過去セグメントの線色
-    bg_color       : 背景色
-    text_color     : ラベル文字色
+位置づけ: 値の一覧を表示する場合は tri_s12_act_viz_tk_value を使う。
+設計意図: tkinter の mainloop() はキューの受信を止めてしまうため使わず、セグメントを受け取るたびに画面の更新を処理する。ウィンドウを閉じたら停止ファイルを作り、StreamCore を穏やかに止める。
+前提・制約: GUI を表示できる環境が必要。
 """
 MODULE_NAME = "ACT_Viz_Tkinter_Graph"
 
@@ -248,14 +236,8 @@ def a_viz_graph_trigger(
         val_col_idx_raw = config.get("val_col_idx")
         if val_col_idx_raw is None:
             raise ValueError("val_col_idx is required.")
-        val_col_idx = int(val_col_idx_raw)
-        
-        _seg_header_offset = 4 # segment_header 4列分を補正
-        actual_col_idx = val_col_idx + _seg_header_offset
-        if not (0 <= actual_col_idx < n_col_def):
-            raise ValueError(
-                f"val_col_idx={val_col_idx} が範囲外です（col_defの有効範囲: "
-                f"0～{n_col_def - _seg_header_offset - 1}）。col_def={col_def}")
+        val_col_idx = val_col_idx_raw
+        actual_col_idx = base.resolve_act_col(val_col_idx_raw, col_def, "val_col_idx")  # Find と同じ列番号 → 行の中の位置
 
         window_title  = str(config.get("window_title", _DEFAULTS["window_title"]))
         window_w      = int(config.get("window_w", _DEFAULTS["window_w"]))

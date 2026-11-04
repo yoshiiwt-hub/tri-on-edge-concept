@@ -4,17 +4,16 @@
 """
 ########################################
 # Find Trigger Module [Demo]
-# Ver: 06.e.20261001    By: IWATA, Y.'s Agent AI
-# Mod: モジュール名を tri_edge_XX_* から tri_sXX_* 形式に変更（tri_edge_11_find_demo → tri_s11_find_demo）
+# Ver: 06.f.20261102    By: IWATA, Y.'s Agent AI
+# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
 ########################################
-f_demo_random_trigger  # デモ用乱数を生成してキューに送信する Find Trigger
-f_demo_csv_trigger     # デモ用 CSV ファイルを1行ずつ読み込んでキューに送信する Find Trigger
+実機が無くても TriEdge の動作を確かめられるよう、デモ用のデータを流す
 
-動作概要
-    1. f_demo_random_trigger: col_def の dtype に従いランダム値を生成してポーリング送信
-    2. f_demo_csv_trigger: デモ用 CSV ファイルを指定インターバルで1行ずつキューに送信
-    3. どちらも stop_event が立つまでループを継続
-    4. 動作確認・テスト目的のスタンドアロン実行にも対応
+主要関数:
+f_demo_random_trigger  # col_def の型に合わせた乱数を作り、キューに流す。
+f_demo_csv_trigger     # デモ用の CSV ファイルを1行ずつ読み、キューに流す。
+
+位置づけ: 新しい設定や Act を試すときの入力として使う。本番の運用では使わない。
 """
 MODULE_NAME = "FIND_Demo"
 

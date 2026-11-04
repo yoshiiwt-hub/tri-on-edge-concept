@@ -4,38 +4,18 @@
 """
 ########################################
 # Act Trigger Module [SQLite Store]
-# Ver: 02.b.20261005    By: IWATA, Y.'s Agent AI
-# Mod: 統計まわりを tri_s10_stream_wave_stat の init_stats / calc_stats に集約（値が出せなかった項目を共通形式でログに出す。B-9）
+# Ver: 02.c.20261102    By: IWATA, Y.'s Agent AI
+# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
 ########################################
-a_store_seg_trigger    # セグメントの全行を SQLite に保存する
-a_store_stats_trigger  # セグメントの統計量を算出し、SQLite に保存する
+セグメントの値や統計量を、エッジ上の SQLite に蓄積する出口
 
-動作概要
-    1. segment を受信
-    2. a_store_seg_trigger   : セグメントの全行を col_def の列定義のまま
-                                INSERT OR REPLACE（seg_id + row_num が一致する行を上書き）
-       a_store_stats_trigger : column_register_map / out_coldef に基づき統計量を算出
-                                （tri_s10_stream_wave_stat の compile_register_map / build_stats を使用）
-                                してから INSERT OR REPLACE（seg_id が一致する行を上書き）
+主要関数:
+a_store_seg_trigger    # セグメントの全行を SQLite に保存する。
+a_store_stats_trigger  # セグメントの統計量を求め、SQLite に保存する。
+_run_store_trigger     # 2つの trigger の共通ループ（保存する内容とテーブルの構造だけが異なる）。
 
-SQLite設定（共通）
-    db_path     : SQLiteファイルパス（絶対パス または システムルートからの相対パス）
-    table_name  : テーブル名（英数字・アンダースコアのみ。省略時 a_store_stats_trigger は"stats"、
-                  a_store_seg_trigger は"segments"）
-    reset_table : 起動時にテーブルをDROPしてから作り直すか（デフォルト: False）
-
-a_store_stats_trigger 専用設定
-    column_register_map : 統計量算出用の列マッピング定義（必須）
-    out_coldef           : 統計量の出力列定義（必須）
-
-テーブル仕様（a_store_stats_trigger）
-    固定列: seg_id TEXT PRIMARY KEY, seg_ts_start TEXT, seg_ts_end TEXT, seg_rows INTEGER
-    可変列: out_coldef の dtype に応じて INTEGER / REAL / TEXT を自動生成
-
-テーブル仕様（a_store_seg_trigger）
-    列: col_def をそのまま使う（seg_id/seg_ind/seg_ts/seg_status 等の segment_header 列は
-        col_def に既に含まれているため、別途合成しない）
-    PK: col_def の先頭2列（慣例上 seg_id, seg_ind）の複合PRIMARY KEY
+位置づけ: 上位の DB が無い・つながらない環境で、エッジ上にデータを貯める。統計量の算出は tri_s10_stream_wave_stat を使う。
+設計意図: 同じセグメント（同じ行）が再び届いた場合は上書きし（INSERT OR REPLACE）、重複した行が増えないようにする。
 """
 MODULE_NAME = "ACT_SQLite"
 
@@ -205,7 +185,16 @@ def _run_store_trigger(
     config:     Dict[str, Any],
     stop_event: threading.Event,
 ) -> None:
-    """SQLiteへ保存する共通ループ。mode で保存内容・テーブル構造だけが変わる"""
+    """SQLiteへ保存する共通ループ。mode で保存内容・テーブル構造だけが変わる
+
+    [テーブル仕様]（旧モジュール Docstring から移動）
+        a_store_stats_trigger: 固定列 seg_id TEXT PRIMARY KEY, seg_ts_start TEXT, seg_ts_end TEXT, seg_rows INTEGER
+                               可変列は out_coldef の dtype に応じて INTEGER / REAL / TEXT を自動生成
+                               INSERT OR REPLACE（seg_id が一致する行を上書き）
+        a_store_seg_trigger  : 列は col_def をそのまま使う（segment_header の列は col_def に含まれるため合成しない）
+                               PK は col_def の先頭2列（慣例上 seg_id, seg_ind）の複合 PRIMARY KEY
+                               INSERT OR REPLACE（seg_id + 行番号が一致する行を上書き）
+    """
     TRIGGER_NAME = "a_store_seg_trigger" if mode == "seg" else "a_store_stats_trigger"
 
     """======== STARTUP ========"""

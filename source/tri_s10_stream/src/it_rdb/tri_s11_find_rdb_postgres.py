@@ -4,31 +4,17 @@
 """
 ########################################
 # Find Trigger Module [PostgreSQL]
-# Ver: 02.f.20261001    By: IWATA, Y.'s Agent AI
-# Mod: モジュール名を tri_edge_XX_* から tri_sXX_* 形式に変更（tri_edge_11_find_rdb → tri_s11_find_rdb_postgres）
+# Ver: 02.g.20261102    By: IWATA, Y.'s Agent AI
+# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
 ########################################
-f_table_diff_bulk_trigger  # PostgreSQL テーブルの差分を定期取得してキューに流す
+上位 DB（PostgreSQL）に追記されたデータを、Stream へ取り込む入口
 
-動作概要
-    1. table_key_list で指定したスキーマ・テーブル・キー列を対象に差分を取得
-    2. SQLite の table_state DB に前回の最終タイムスタンプを保存・復元
-    3. ポーリングごとに PostgreSQL に接続し、前回タイムスタンプ以降の新規行を取得
-    4. 取得結果をメタ情報（テーブル名・列名・dt_fr/dt_to 等）と合わせて queue_out に送信
-    5. 接続断時は再接続を試みる（最大 pg_reconnect_max 回）
+主要関数:
+f_table_diff_bulk_trigger  # テーブルの差分を定期的に取得し、キューに流す。
 
-接続設定
-    pg_host          : PostgreSQL ホスト（環境変数 PG_HOST / デフォルト: "localhost"）
-    pg_port          : PostgreSQL ポート（環境変数 PG_PORT / デフォルト: 5432）
-    pg_dbname        : データベース名（環境変数 PG_DB / デフォルト: "postgres"）
-    pg_user          : ユーザ名（環境変数 PG_USER / デフォルト: "postgres"）
-    pg_password      : パスワード（環境変数 PG_PASS / デフォルト: "postgres"）
-    table_key_list   : 監視対象テーブルリスト [{schema, table, key}, ...]（必須）
-    initial_lookback_hours: 初回起動時の遡及時間（デフォルト: 24 時間 / max_past_hours でも指定可）
-    interval_sec     : ポーリング間隔秒（デフォルト: 10）
-    max_row          : 1回の差分取得上限行数（デフォルト: 1000）
-    reset_state      : SQLite 状態 DB をリセットするか（デフォルト: false）
-    pg_reconnect_max : 再接続試行最大回数（デフォルト: 3）
-    pg_reconnect_wait: 再接続待機時間秒（デフォルト: 5.0）
+位置づけ: 他システムが書き込むテーブルのデータを、エッジ側の後続処理（SMB・FTP 送信等）へ渡す。
+設計意図: 前回の取得位置を SQLite に保存し、再起動しても取りこぼし・重複を抑える。1 回の取得件数を max_row で制限し、大量の追記は複数周期に分けて追いつく。
+前提・制約: key 列は単調増加すること（更新時刻など）。値が過去に戻る行は取得されない。
 """
 MODULE_NAME = "FIND_RDB"
 

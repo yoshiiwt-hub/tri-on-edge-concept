@@ -4,36 +4,19 @@
 """
 ########################################
 # Segment Stats Calculation Functions（20_stored 用ポータブル版）
-# Ver: 01.a.20260716    By: IWATA,Y.
-# Mod: src/tri_edge_19_calc_stats.py（Ver 01.a.20260615）を 20_stored/ へ複製。
-#      src/ 本体（stream_core）から独立させるため、tri_edge_00_supervise_base への
-#      依存を外し、簡易な print ベースのログ出力に置き換えた。
-#      計算ロジック自体（compile_register_map / build_stats / 各 stat 関数）は無改造。
+# Ver: 01.b.20261102    By: IWATA, Y.'s Agent AI
+# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
 ########################################
-compile_register_map  # column_register_map と output_column を検証・コンパイルして計算関数リストを返す
-build_stats           # コンパイル済みエントリリストに基づきセグメントの統計量 dict を構築して返す
-_stat_mean            # 平均値を算出する
-_stat_min             # 最小値を算出する
-_stat_max             # 最大値を算出する
-_stat_std             # 母標準偏差を算出する
-_stat_count           # 有効値件数を返す
-_stat_sum             # 合計値を算出する
-_stat_range           # 範囲（max - min）を算出する
-_stat_first           # 先頭値を返す
-_stat_last            # 最終値を返す
-_stat_med             # 中央値を算出する
-_stat_iqr             # IQR（四分位範囲）を算出する
+セグメントから統計量を求める計算を、Stream と同じ定義で Stored 側でも使えるようにする
 
-動作概要
-    1. compile_register_map() で column_register_map と output_column を検証し計算クロージャリストを生成する
-    2. make_stat_func() で stat_name（mean / min / max / std / count / sum / range / med / iqr / first / last / nth / pertl / sig_u / sig_l / mode / n_null / seg_len）に対応するクロージャを生成する
-    3. スライス指定（[start_frac, end_frac]）により対象区間を絞り込んでから統計量を算出できる
-    4. build_stats() はコンパイル済みリストを受け取りセグメント全行を走査して統計量 dict を返す
-    5. warn 発生時は {out_key}_WARN キーに理由を記録し value が None の場合はそのキーを出力しない
+主要関数:
+compile_register_map  # column_register_map と output_column を検証し、計算関数のリストにする。
+build_stats           # コンパイル済みのリストに従って、セグメントの統計量の辞書を作る。
+make_stat_func        # stat_name に対応する計算関数を作る。
 
-    ※ build_stats() は seg[0][0]=seg_id, seg[0][2]=seg_ts_start, seg[-1][2]=seg_ts_end という
-       行構造を前提とする（src/save_csv.py 等が保存する TriEdge のセグメント行構造と同じ）。
-       20_stored 側の学習スクリプトでセグメントを組み立てる際は、この並びに合わせること。
+位置づけ: Stream の tri_s10_stream_wave_stat（旧 tri_edge_19_calc_stats）の計算部分の複製。データロードモジュール（load_pp/sin_wave の load_data 等）が、波形から統計量のテーブルを作るときに使う。
+設計意図: Stream と同じ統計量の定義で学習データを作り、学習したモデルと Stream での判定の入力をそろえる。Stream 本体（supervise_base 等）には依存させず、Stored 側だけで動かせるようにする。
+前提・制約: build_stats は、seg[0][0]=seg_id、seg[0][2]=seg_ts_start、seg[-1][2]=seg_ts_end という行の構造を前提とする（Stream の tri_s12_act_csv が保存するセグメントの行と同じ）。Stored 側でセグメントを組み立てるときは、この並びに合わせる。
 """
 MODULE_NAME = "Calc_Seg_Stats"
 
@@ -268,7 +251,10 @@ def make_stat_func(
     slice_spec:  Optional[Tuple[float, float]],
     stat_params: list,
 ) -> Any:
-    """stat計算ロジックを生成。LOOP INIT 時に呼び出す"""
+    """stat計算ロジックを生成。LOOP INIT 時に呼び出す
+    stat_name: mean / min / max / std / count / sum / range / med / iqr / first / last / nth / pertl / sig_u / sig_l / mode / n_null / seg_len
+    slice_spec: [start_frac, end_frac] で対象区間を絞り込んでから算出する
+    """
 
     # seg_len : セグメントの全行数（スライス非適用）
     if stat_name == "seg_len":

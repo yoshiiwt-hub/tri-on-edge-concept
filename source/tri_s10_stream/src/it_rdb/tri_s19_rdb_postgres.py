@@ -4,25 +4,21 @@
 """
 ########################################
 # PostgreSQL Client Utility Module
-# Ver: 01.i.20261007    By: IWATA, Y.'s Agent AI
-# Mod: pg_parse_col_custom_value / pg_apply_col_custom_value を追加（指定した列に固定値・現在時刻を入れる col_custom_value）
+# Ver: 01.k.20261102    By: IWATA, Y.'s Agent AI
+# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
 ########################################
-get_connection          # 環境変数から pg8000 接続を取得（単発用）
-pg_merge_env            # config の未設定 pg_* キーを環境変数 PG_* で補完して返す
-pg_connect_if_needed    # 接続状態を確認し、必要であれば再接続して返す
-pg_fetch_diff           # テーブルからキー列を条件に差分行を取得
-pg_make_insert_sql      # col_def から INSERT SQL 文字列を生成
-pg_ensure_table         # テーブルが存在しなければ col_def に基づいて自動作成
-pg_check_schema         # 既存テーブルと col_def のスキーマ整合チェック
-pg_parse_col_custom_value # col_custom_value（指定した列に固定値・現在時刻を入れる設定）を検証し、登録列の位置に対応付ける
-pg_apply_col_custom_value # 登録する1行に col_custom_value を適用する
+PostgreSQL を使うトリガーが共通で使う、接続・取得・登録・テーブル管理の部品集
 
-動作概要
-    1. pg8000 を使った PostgreSQL 接続ユーティリティ関数群
-    2. 環境変数（PG_HOST / PG_PORT / PG_DB / PG_USER / PG_PASS）から接続情報を補完
-    3. 接続断検出・再接続・差分取得・INSERT SQL 生成をサポート
-    4. col_def の型定義（int / float / str / time / jsonb）を PostgreSQL DDL 型に変換
-    5. テーブル自動作成・スキーマ整合チェック機能でデプロイ時のミスを防止
+主要関数:
+pg_merge_env / pg_connect_if_needed               # 接続情報を環境変数で補い、切れていれば接続し直す。
+pg_fetch_diff                                     # キー列を条件に、前回以降に追加された行を取得する。
+pg_make_insert_sql                                # col_def から INSERT 文を作る。
+pg_ensure_table / pg_check_schema                 # テーブルを作成し、既存のテーブルと col_def の食い違いを調べる。
+pg_resolve_col_locs / pg_parse_col_custom_value   # Act の列の指定を、登録する行の中の位置に変換する。
+
+位置づけ: RDB 系のトリガー（tri_s11_find_rdb_postgres、tri_s12_act_rdb_postgres、tri_s12_act_rdb_alive）から呼ばれる。
+設計意図: 純 Python の pg8000 を使い、コンパイル済みのドライバが使えない機器（32bit ARM の Linux 等）でも動くようにする。テーブルの自動作成と構成の照合で、配置時の設定ミスを起動時に見つける。長期の接続の管理は、ループを持つ呼び出し側が行う。
+前提・制約: 接続情報は環境変数（PG_HOST / PG_PORT / PG_DB / PG_USER / PG_PASS）で渡す。設定に書いた値があれば、そちらを優先する。
 """
 
 MODULE_NAME = "UTIL_RDB"
@@ -32,7 +28,7 @@ from   datetime import datetime as dt
 import os
 import sys
 import traceback
-from   typing import Any, Dict, List, Optional
+from   typing import Any, Dict, List, Optional, Tuple
 
 """external library"""
 import pg8000.dbapi as pg_dbapi   # PostgreSQL Adapter
@@ -446,6 +442,34 @@ def pg_check_schema(
     return errors
 
 
+def pg_resolve_col_locs(
+    config: Dict[str, Any],
+    col_def: Dict[int, Any],
+) -> Tuple[List[int], List[int], List[int]]:
+    """
+    hide_col_loc / jsonb_col_loc / utc_to_jst_col_loc を読み、行の中の位置（固定4列 + Find の列）に変換して返す（起動時に1回）
+    設定は Find と同じ列番号で書き、先頭の固定4列は "seg_id" / "seg_ind" / "seg_ts" / "seg_status" の名前で書く
+      既定: hide_col_loc = ["seg_ind", "seg_ts", "seg_status"]、jsonb_col_loc = [5]、utc_to_jst_col_loc = [4]
+    設定した値の範囲外・不正な名前は ValueError。既定値のうち Find の列数を超えるものは使わない（従来どおり無視する）
+    Mod: 2026.10.21    By: IWATA, Y.'s Agent AI
+    Returns: (hide_col_loc, jsonb_col_loc, utc_to_jst_col_loc)
+    """
+    defaults = {
+        "hide_col_loc"      : ["seg_ind", "seg_ts", "seg_status"],
+        "jsonb_col_loc"     : [5],
+        "utc_to_jst_col_loc": [4],
+    }
+    n_find = len(col_def) - len(base.SEG_HEADER_COLS)
+    result = []
+    for key, default in defaults.items():
+        if key in config:
+            result.append(base.resolve_act_cols(config.get(key), col_def, key))
+        else:
+            result.append([base.resolve_act_col(v, col_def, key) for v in default
+                           if isinstance(v, str) or v < n_find])
+    return result[0], result[1], result[2]
+
+
 def pg_parse_col_custom_value(
     config: Dict[str, Any],
     col_def: Dict[int, Any],
@@ -453,27 +477,27 @@ def pg_parse_col_custom_value(
 ) -> Dict[int, Dict[str, Any]]:
     """
     col_custom_value（指定した列に、セグメントの値にかかわらず固定値または現在時刻を入れる設定）を検証し、
-    キー（Act 側の col_def インデックス）を、登録する列（hide_col_loc を除いた並び）の位置に対応付けて返す（起動時に1回）
+    キー（Find と同じ列番号。先頭の固定4列は "seg_id" 等の名前）を、登録する列（hide_col_loc を除いた並び）の位置に対応付けて返す（起動時に1回）
+    hide_col_loc: 行の中の位置（pg_resolve_col_locs の結果）
       {"<col>": {"src": "const", "value": 値}}                  : 固定値（文字列・数値・null）
       {"<col>": {"src": "now"}}                                 : 現在時刻（datetime のまま。time 型の列向け）
       {"<col>": {"src": "now", "format": "%Y-%m-%d %H:%M:%S"}}  : 現在時刻を書式の文字列にする（str 型の列向け）
     範囲外・hide_col_loc に含まれる列・src の誤りは ValueError
-    Mod: 2026.10.07    By: IWATA, Y.'s Agent AI
+    Mod: 2026.10.21    By: IWATA, Y.'s Agent AI（キーを Find と同じ列番号で書くように変更）
     Returns: {登録列の位置: 指定内容}
     """
     raw = config.get("col_custom_value", None) or {}
     if not isinstance(raw, dict):
-        raise ValueError(f"col_custom_value は列番号をキーとする辞書（{{\"0\": ...}}）で指定してください: {raw!r}")
+        raise ValueError(f"col_custom_value は列番号（Find と同じ列番号）をキーとする辞書（{{\"0\": ...}}）で指定してください: {raw!r}")
     selected_keys = [k for k in col_def.keys() if k not in hide_col_loc]  # 登録する列の並び（col_def_selected と同じ順）
     result: Dict[int, Dict[str, Any]] = {}
     for key, spec in raw.items():
-        if not str(key).strip().lstrip("-").isdigit():
+        _k = str(key).strip()
+        if not (_k.isdigit() or _k in base.SEG_HEADER_COLS):
             raise ValueError(
-                f"col_custom_value のキーは col_def のインデックス（数字）で指定してください: {key!r}。"
+                f"col_custom_value のキーは列番号（Find と同じ列番号）か {list(base.SEG_HEADER_COLS)} で指定してください: {key!r}。"
                 f"閉じ括弧 }} の位置を確認してください")
-        col = int(key)
-        if col not in col_def:
-            raise ValueError(f"col_custom_value のキー {col} が col_def の範囲外です (有効範囲: 0-{len(col_def) - 1})")
+        col = base.resolve_act_col(_k, col_def, f"col_custom_value[{key!r}]")  # 行の中の位置
         if col in hide_col_loc:
             raise ValueError(f"col_custom_value のキー {col} は hide_col_loc に含まれる（登録しない）列です")
         if not isinstance(spec, dict) or spec.get("src") not in ("const", "now"):

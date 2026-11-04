@@ -1,8 +1,8 @@
 # Tri-On-Edge 波形統計量の算出と設定ガイド
 
-- Ver: 01.e.20261006
+- Ver: 01.g.20261025
 - By: IWATA, Y.'s Agent AI
-- Mod: Find の型変換の既定値（-9999.9 等）が有効値として集計される旨と、null 指定の推奨を追記
+- Mod: seg_id・seg_ts・seg_ts_start・seg_ts_end の時刻の決まり方（Find の取得時刻、渡されなければ Stream Core の受信時刻）を追記
 
 ---
 
@@ -67,7 +67,7 @@
 
 | index | キー | 内容 |
 |----|------|------|
-| 0 | `seg_id` | セグメントID（発生時刻ベースのユニーク値） |
+| 0 | `seg_id` | セグメントID（開始レコードの時刻ベースのユニーク値。必ず前のセグメントより大きい） |
 | 1 | `seg_ts_start` | 波形の開始タイムスタンプ |
 | 2 | `seg_ts_end` | 波形の終了タイムスタンプ（**最後のデータ行**の時刻。終了条件が成立した終点行の時刻ではない） |
 | 3 | `seg_rows` | 波形の行数（終点行を除いた行数） |
@@ -75,6 +75,12 @@
 ※ 統計を算出する Act Trigger は `CUT_LAST_ROW = True` のため、Stream Core が終点行を除外したセグメントから算出する
 （波形切出しガイド「6. 終点行の扱い」参照）。`seg_ts_end - seg_ts_start` は、最初と最後のデータ行の時刻差になる
 （終了条件の成立時刻までの長さより、1サンプル周期分短い）。
+
+※ 各行の `seg_ts`（＝ `seg_ts_start` / `seg_ts_end`）と `seg_id` は、そのレコードの時刻から作る（`monitor.timestamp_round_ms` で切り捨て）。
+レコードの時刻は、Find が `(count, value, 取得時刻)` をキューに入れた場合はその取得時刻、`(count, value)` の場合は Stream Core が受け取った時刻。
+現在、取得時刻を渡す Find は `tri_s11_find_socket`（サーバーから応答を受け取った時刻）のみで、ほかの Find は Stream Core の受信時刻になる
+（Find から Stream Core までキューで待った時間を含む）。`seg_max_sec`（セグメント長の上限）の判定も同じ時刻を使う。
+`seg_id` は同じ時刻（10ms 単位）に次のセグメントが始まった場合や時刻が戻った場合も、前の値＋1 として重複させない。
 
 ---
 
@@ -184,7 +190,9 @@
 "index": [src_col_idx, "stat_name", [start, end], param]   ← 両方
 ```
 
-- `src_col_idx`：入力データの列番号（`col_def` のインデックスと対応）
+- `src_col_idx`：入力データの列番号。**Find（`trigger_setting_01.json` の `column`）と同じ列番号**で書く（0 始まり）
+  - Act に渡る行の先頭には固定の4列（`seg_id` / `seg_ind` / `seg_ts` / `seg_status`）が付くが、列番号に +4 する必要はない
+  - 固定の4列を使う場合は、`"seg_id"` / `"seg_ind"` / `"seg_ts"` / `"seg_status"` の名前で書く（例 `["seg_ts", "first"]`）
 - `stat_name`：統計量名（第3節参照）
 - `seg_len` を使う場合のみ `src_col_idx = -1`（列不要の番兵）
 
@@ -205,6 +213,8 @@
 
 ## 6. 設定例
 
+　以下の例は、Find の `column` が `0:Timestamp, 1:LOT, 2:Sin, 3:Cos, 4:Tan, 5:CL` の場合を想定している。
+
 ### パターンA：基本統計量
 
 シナリオ：「主要な統計量を全区間で算出する」
@@ -212,14 +222,14 @@
 ```json
 "column_register_map": {
     "0":  [-1, "seg_len"],
-    "1":  [6,  "mean"],
-    "2":  [6,  "med"],
-    "3":  [6,  "min"],
-    "4":  [6,  "max"],
-    "5":  [6,  "range"],
-    "6":  [6,  "std"],
-    "7":  [6,  "count"],
-    "8":  [6,  "n_null"]
+    "1":  [2,  "mean"],
+    "2":  [2,  "med"],
+    "3":  [2,  "min"],
+    "4":  [2,  "max"],
+    "5":  [2,  "range"],
+    "6":  [2,  "std"],
+    "7":  [2,  "count"],
+    "8":  [2,  "n_null"]
 },
 "out_coldef": {
     "0":  ["Seg_Len",   "int",   "numetory", "explanatory", "区間長"],
@@ -240,12 +250,12 @@
 
 ```json
 "column_register_map": {
-    "0":  [6,  "pertl", 25],
-    "1":  [6,  "med"],
-    "2":  [6,  "pertl", 75],
-    "3":  [6,  "iqr"],
-    "4":  [6,  "sig_u",  3],
-    "5":  [6,  "sig_l",  3]
+    "0":  [2,  "pertl", 25],
+    "1":  [2,  "med"],
+    "2":  [2,  "pertl", 75],
+    "3":  [2,  "iqr"],
+    "4":  [2,  "sig_u",  3],
+    "5":  [2,  "sig_l",  3]
 },
 "out_coldef": {
     "0":  ["Sin_P25",   "float", "numetory", "explanatory", "第１四分位"],
@@ -263,11 +273,11 @@
 
 ```json
 "column_register_map": {
-    "0":  [6,  "mean", [0.0, 0.3]],
-    "1":  [6,  "std",  [0.0, 0.3]],
-    "2":  [6,  "mean", [0.5, 1.0]],
-    "3":  [6,  "std",  [0.5, 1.0]],
-    "4":  [6,  "nth",  [0.5, 1.0], 1]
+    "0":  [2,  "mean", [0.0, 0.3]],
+    "1":  [2,  "std",  [0.0, 0.3]],
+    "2":  [2,  "mean", [0.5, 1.0]],
+    "3":  [2,  "std",  [0.5, 1.0]],
+    "4":  [2,  "nth",  [0.5, 1.0], 1]
 },
 "out_coldef": {
     "0":  ["Sin_mean_rise",    "float", "numetory", "explanatory", "平均値＿立上り30%"],
@@ -284,11 +294,11 @@
 
 ```json
 "column_register_map": {
-    "0":  [5,  "nth",  1],
-    "1":  [5,  "nth", -1],
-    "2":  [5,  "mode"],
-    "3":  [8,  "mode"],
-    "4":  [8,  "mean"]
+    "0":  [1,  "nth",  1],
+    "1":  [1,  "nth", -1],
+    "2":  [1,  "mode"],
+    "3":  [5,  "mode"],
+    "4":  [5,  "mean"]
 },
 "out_coldef": {
     "0":  ["LOT_first", "str",   "key",      "key",         "LOT＿先頭行"],
@@ -308,7 +318,7 @@
 | 状況 | 動作 |
 |------|------|
 | `column_register_map` と `out_coldef` のキーが一致しない | 起動停止（ValueError） |
-| `src_col_idx` が範囲外 | 起動停止（ValueError） |
+| `src_col_idx` が範囲外・不正な名前 | 起動停止（ValueError） |
 | 不明な `stat_name` / 不正な `params` | 起動停止（ValueError） |
 | 有効値ゼロ（全行Null等） | `{出力キー}_WARN: "no_valid_values"` |
 | スライス結果が空 | `{出力キー}_WARN: "slice_empty"` |

@@ -8,6 +8,24 @@
 #    int()変換でSeriesを渡すことになりTypeErrorになっていた。d_df['_idx'][y_+'_ss']
 #    （単一角括弧=Series）に修正（AnalyzeFunctionsVZ_DT.py で見つけた同系統のバグと同じパターン）。
 ################################################################
+"""
+########################################
+# EDA Visualization Library [Interactive]（旧 AnalyzeFunctionsVZ_UI）
+# Ver: 01.a.20261102    By: IWATA, Y.'s Agent AI
+# Mod: 規約の形の Docstring を追加
+########################################
+散布図・分布・折れ線・波形の重ね描きを、対話的なグラフ（Plotly）で作る可視化の本体
+
+主要関数:
+gen_interact_scatter       # 散布図（変数の関係）を作る。
+gen_interact_dist          # 箱ひげ図・分布を作る。
+gen_interact_linechart     # 折れ線（時系列・値の順の傾向）を作る。
+gen_interact_layered_wave  # 波形の重ね描きを作る（列 WVID / WVPT を使う）。
+
+位置づけ: tri_s21_eda_viz_interact から呼ばれる。既存の可視化ライブラリ（AnalyzeFunctionsVZ_UI）を Stored 領域に取り込んだもの。
+設計意図: グラフ（Figure）を返すだけにし、保存するか・その場で表示するかは呼び出し側が決められるようにする。
+前提・制約: 波形の重ね描きは列名 WVID（波形 ID）/ WVPT（波形内の位置）を前提とする（呼び出し側で seg_id / seg_ind から変換する）。取り込み時に見つけた不具合の修正内容は、冒頭の FIX NOTE を参照。
+"""
 #################### IMPORT LIBRARY ##########
 import copy             #リストのコピー
 import datetime as dt   #時間、時刻

@@ -4,15 +4,15 @@
 """
 ########################################
 # Single Run Test [Act Trigger]
-# Ver: 01.a.20261012    By: IWATA, Y.'s Agent AI
-# Mod: 新規作成（act を単体で動かす。既定は内蔵の設定（imq テンプレート）、環境変数・引数で設定ファイルを渡せる）
+# Ver: 01.b.20261024    By: IWATA, Y.'s Agent AI
+# Mod: セグメントの先頭4列は設定ファイルの segment_header（表示用）を読まず、stream_core と同じく base.SEG_HEADER_COLS から作る
 ########################################
 act（出力）を単体で動かし、セグメントを処理し終えることを確かめるテスト
     列定義から作ったセグメント（N_SEGMENTS 件）を、act のキューへ直接渡す（find・波形切出しは使わない）
 
     既定        : 内蔵の設定（列定義 + a_template_imq_trigger）で動かす。settings/ は読まない
     設定を渡す  : 環境変数か引数で、設定ファイルを渡すと、その設定で動かす
-                  ・act の設定（trigger_setting_02 形式。act_trigger と segment_header）
+                  ・act の設定（trigger_setting_02 形式。act_trigger を使う。segment_header は表示用のため読まない）
                       環境変数  TRI_TEST_ACT_SETTING=<パス>   /  直接実行  --setting <パス>
                   ・列定義（trigger_setting_01 形式の column。act の列定義は「セグメントの先頭4列 + find の列」）
                       環境変数  TRI_TEST_FIND_SETTING=<パス>  /  直接実行  --find-setting <パス>
@@ -57,32 +57,36 @@ N_SEGMENTS      = 3           # act へ渡すセグメント数
 N_ROWS          = 5           # 1セグメントの行数
 TIMEOUT_SEC     = 30.0        # act が処理を終えるのを待つ上限（秒）
 
-# 内蔵の設定（act）とセグメントの先頭4列
+# 内蔵の設定（act）
 DEFAULT_ACT: Dict[str, Any] = {
     "module": "src.tri_s12_act_tmpl_queue",
     "func"  : "a_template_imq_trigger",
     "teams_notify": False,
 }
+# セグメントの先頭4列（stream_core と同じ。列名は base.SEG_HEADER_COLS）
+_SEG_HEADER_DEF: Dict[str, List[str]] = {
+    "seg_id"    : ["int",  "key", "key", "Segment ID"],
+    "seg_ind"   : ["int",  "key", "key", "Segment Row Index"],
+    "seg_ts"    : ["time", "key", "key", "Timestamp When Data Collected"],
+    "seg_status": ["int",  "key", "key", "Segment Process Status"],
+}
 DEFAULT_SEGMENT_HEADER: Dict[int, List[str]] = {
-    0: ["seg_id",     "int",  "key", "key", "Segment ID"],
-    1: ["seg_ind",    "int",  "key", "key", "Segment Row Index"],
-    2: ["seg_ts",     "time", "key", "key", "Timestamp When Data Collected"],
-    3: ["seg_status", "int",  "key", "key", "Segment Process Status"],
+    i: [name] + _SEG_HEADER_DEF[name] for i, name in enumerate(base.SEG_HEADER_COLS)
 }
 
 
 def load_act_setting() -> Tuple[Dict[str, Any], Dict[int, Any], Optional[str]]:
     """
     act の設定とセグメントの先頭4列を返す（環境変数 TRI_TEST_ACT_SETTING があればその設定、なければ内蔵の設定）
+    先頭4列は、設定ファイルの segment_header（表示用）を読まず、stream_core と同じ定義を使う
+    Mod: 2026.10.24    By: IWATA, Y.'s Agent AI
     Returns: (act_trigger の設定, セグメントの先頭列の定義, 設定ファイルのパス（内蔵の設定なら None）)
     """
     path = os.environ.get(ENV_ACT_SETTING, "").strip()
     if not path:
         return dict(DEFAULT_ACT), dict(DEFAULT_SEGMENT_HEADER), None
     cfg = read_setting(path)
-    header = cfg.get("segment_header")
-    header = {int(k): v for k, v in header.items()} if header else dict(DEFAULT_SEGMENT_HEADER)
-    return dict(cfg["act_trigger"]), header, path
+    return dict(cfg["act_trigger"]), dict(DEFAULT_SEGMENT_HEADER), path
 
 
 def make_act_col_def(header: Dict[int, Any], col_def_find: Dict[int, Any]) -> Dict[int, Any]:

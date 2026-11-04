@@ -4,10 +4,18 @@
 """
 ########################################
 # Learn Runner
-# Ver: 02.c.20260930    By: IWATA, Y.'s Agent AI
-# Mod: __main__ブロックの設定を tri_s20_setting.json から読み込む方式に変更。
-#      _load_setting() / _resolve_outdir() ヘルパー関数を追加。
+# Ver: 02.d.20261102    By: IWATA, Y.'s Agent AI
+# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
 ########################################
+蓄積したデータから、Stream の診断（異常判定）で使う正常状態のモデルを学習する入口
+
+主要関数:
+load   # load_pp のデータロードモジュールを呼び、データと列定義を得る。
+learn  # 学習モジュール（tri_s21_learn_us_mt / tri_s21_learn_us_gb）を呼び、モデルをファイルに出力する。
+
+位置づけ: 学習の結果（単位空間・ガードバンド）は、Stream の診断の Act（tri_s12_act_diag_mt / tri_s12_act_diag_gb）がそのまま読む。EDA の入口は tri_s20_eda_runner。
+設計意図: 学習（重い計算・pandas 等を使う）はオフラインの Stored 側で行い、エッジの Stream 側は学習済みのモデルで判定するだけにして、エッジを軽く保つ。呼び出し方は tri_s20_eda_runner と同じ構成にそろえる。
+前提・制約: 設定は同じフォルダの tri_s20_setting.json から読む（設定項目の説明は同ファイルのコメントを参照）。単体で実行する（__main__）。
 """
 MODULE_NAME = "Learn_Runner"
 

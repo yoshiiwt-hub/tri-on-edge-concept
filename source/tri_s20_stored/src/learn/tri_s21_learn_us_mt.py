@@ -4,32 +4,18 @@
 """
 ########################################
 # MT-method (Mahalanobis-Taguchi) Unit Space Learning
-# Ver: 03.b.20260930    By: IWATA, Y.'s Agent AI
-# Mod: tri_s20_learn_us_runner.py から呼び出される形に変更。設定ファイル
-#      （tri_edge_21_learn_mt.json）の読込みを廃止し、main(TITLE, df, col_def, config)
-#      として呼ばれる形式に統一（tri_s20_eda_runner.py の visualise() が
-#      呼び出す各モジュールの main() と同じ引数構成）。データ読込み（統計量化を含む）も
-#      呼び出し元（runner）の load() に一本化されたため、本モジュール内では行わない
-#      （旧来の input_mode="segment"/"stats" の分岐は廃止。df は既に
-#      1セグメント=1行の統計量テーブルである前提）。
+# Ver: 03.c.20261102    By: IWATA, Y.'s Agent AI
+# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
 ########################################
 学習データ（1セグメント=1行の統計量テーブル）から単位空間（平均・共分散逆行列・分散）を生成する
 
-動作概要
-    1. main(TITLE, df, col_def, config) が呼び出される
-       （df: 統計量テーブル。1セグメント=1行。col_def: 対応する列定義）
-    2. mt_target_col_names で指定した列を各セグメントごとに並べ、学習行列を作る
-    3. 平均ベクトル・共分散行列・共分散行列の疑似逆行列・分散を計算
-    4. 単位空間を {title}_unit_space.json に保存する
+主要関数:
+main                   # 統計量のテーブルから単位空間を作り、JSON に保存する（tri_s20_learn_us_runner から呼ばれる）。
+mahalanobis_unitspace  # 学習データの行列から、平均・共分散行列の逆行列・分散を求める。
 
-    ※ 本モジュールは stream_core / TriEdge本体とは独立しており、
-       tri_s20_learn_us_runner.py から呼び出して使う（単体実行は不可）
-
-config（呼び出し元 runner の LEARN_CONFIG で指定）
-    mt_target_col_names : 単位空間の変数として使う列名（df に含まれる列名。
-                          例: ["Sin_mean", "Sin_std", "Sin_med"]）（必須）
-    title  : 出力ファイル名の接頭辞（デフォルト: TITLE）
-    outdir : 出力先ディレクトリ（デフォルト: "./output/"）
+位置づけ: 出力（{title}_unit_space.json）は、Stream の tri_s12_act_diag_mt がそのまま読む。
+設計意図: 共分散行列には疑似逆行列を使い、変数どうしの相関が強くても計算が止まらないようにする。
+前提・制約: データは統計量のテーブル（1セグメント = 1行。load_data）。単位空間の変数にする列（mt_target_col_names）は、Stream の診断で使う統計量の列名と一致させる。
 """
 MODULE_NAME = "LEARN_MT"
 

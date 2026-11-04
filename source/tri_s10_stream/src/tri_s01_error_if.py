@@ -4,37 +4,19 @@
 """
 ########################################
 # Error Interface Module [Minimal / Receive-only]
-# Ver: 01.a.20261012    By: IWATA, Y.'s Agent AI
-# Mod: 新規作成。find / act が呼ぶエラー通知の窓口（インターフェース）だけを持つ最小実装
+# Ver: 01.b.20261102    By: IWATA, Y.'s Agent AI
+# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
 ########################################
-SIGNAL_CONTINUE        # 通知後も処理を継続してよい
-SIGNAL_STOP            # 呼び出し側に停止を求める（この最小実装は返さない）
-TriOnEdgeDataError     # データ（プロトコル）異常を表す例外
-ErrorIF                # エラー通知の窓口（クラスメソッドのみ。状態はプロセス内で共有）
-    init                    # 状態を初期化する（起動時に1回）
-    report_exception        # 例外を受け取って記録し、シグナルを返す
-    report_event            # 辞書形式のイベントを受け取って記録し、シグナルを返す
-    drain_events            # 未回収のイベントをすべて取り出す（監督側が呼ぶ）
-    apply_policy            # イベントに適用するルールを返す（この最小実装は常に空）
-    is_frequent             # 同じ signature が指定時間内に指定回数以上発生したか
-    format_supervisor_log   # 監督ログの1行を整形する
-    can_escalate            # 同じ signature を、まだエスカレーションしていないか
-    mark_escalated          # エスカレーション済みにする
-    enter_suppression       # 同じ signature のログ出力を抑制する
-    should_suppress         # 抑制中か
-    emit_summary_if_needed  # 抑制した件数のサマリを一定間隔でログに出す
-    shutdown                # 終了処理（サマリを出して状態を破棄する）
+ErrorIF の窓口（関数名・引数）だけを持つ、受け取り専用の最小実装
 
-動作概要
-    1. find / act が起こしたエラーを受け取り、ログに残して、イベントとして保持するだけの最小実装
-       （ポリシーによる判定・エスカレーション・プロセス停止などの「判断」は行わない）
-    2. 返すシグナルは常に SIGNAL_CONTINUE。呼び出し側は自分で stop_event を扱う
-    3. 必要になったら、同じ関数名・引数のまま、判断を持つ実装に差し替えられる
-       （差し替え先は呼び出し側のコードを変えずに済むことを目標にした、窓口の約束事）
-    4. signature は "{exc_type}.{category}.{phase}.{trigger_id}"（例: ConnectionFailed.comm.loop.f_xxx_trigger）
-    5. イベントは辞書: time / trigger_id / phase / category / exc_type / message / signature / log_file
-       phase    : startup / loop / shutdown
-       category : config / data / io / comm / internal
+主要関数:
+ErrorIF.report_exception / report_event  # エラーを記録し、常に SIGNAL_CONTINUE を返す。
+ErrorIF.drain_events                     # 未回収のイベントを古い順に取り出す（監督側が呼ぶ）。
+ErrorIF.emit_summary_if_needed           # 抑制した件数のサマリを、一定間隔でログに出す。
+
+位置づけ: Find・Act が呼ぶエラー通知の窓口。ポリシーによる判定・エスカレーション・プロセスの停止などの判断は行わない。
+設計意図: 窓口の約束（関数名・引数・イベントの形）を守ったまま、判断を持つ実装へ差し替えられるようにし、呼び出し側のコードを変えずに済むようにする。
+前提・制約: 停止の判断は、呼び出し側が自分の stop_event で行う。イベントの形は report_event を参照。
 """
 MODULE_NAME = "ERROR_IF"
 
@@ -56,8 +38,8 @@ except ModuleNotFoundError:
 ########################################
 # Signals / Exceptions
 ########################################
-SIGNAL_CONTINUE = "CONTINUE"
-SIGNAL_STOP     = "STOP"
+SIGNAL_CONTINUE = "CONTINUE"  # 通知後も処理を継続してよい
+SIGNAL_STOP     = "STOP"      # 呼び出し側に停止を求める（この最小実装は返さない）
 
 
 class TriOnEdgeDataError(Exception):
@@ -130,7 +112,12 @@ class ErrorIF:
 
     @classmethod
     def report_event(cls, event: Dict[str, Any]) -> str:
-        """辞書形式のイベントを受け取り、記録して SIGNAL_CONTINUE を返す"""
+        """辞書形式のイベントを受け取り、記録して SIGNAL_CONTINUE を返す
+        イベントは辞書: time / trigger_id / phase / category / exc_type / message / signature / log_file
+            phase    : startup / loop / shutdown
+            category : config / data / io / comm / internal
+        signature は "{exc_type}.{category}.{phase}.{trigger_id}"（例: ConnectionFailed.comm.loop.f_xxx_trigger）
+        """
         ev = dict(event or {})
         ev.setdefault("time", dt.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3])
         for key, default in (("trigger_id", "-"), ("phase", "-"), ("category", "-"),
@@ -211,6 +198,7 @@ class ErrorIF:
 
     @classmethod
     def mark_escalated(cls, signature: str) -> None:
+        """signature をエスカレーション済みにする。"""
         with cls._lock:
             cls._escalated.add(signature)
         return None
@@ -224,6 +212,7 @@ class ErrorIF:
 
     @classmethod
     def should_suppress(cls, signature: str) -> bool:
+        """signature のログ出力を抑制中かを返す。"""
         with cls._lock:
             return signature in cls._suppressed
 

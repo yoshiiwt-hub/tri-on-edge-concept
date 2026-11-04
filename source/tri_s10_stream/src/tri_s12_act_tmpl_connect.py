@@ -4,29 +4,17 @@
 """
 ########################################
 # Act Trigger Module [Connection Template]
-# Ver: 06.a.20261004    By: IWATA, Y.'s Agent AI
-# Mod: 終点行の除外を各 Act の [:-1] から core へ移し、CUT_LAST_ROW 属性で宣言する形に変更（B-2）
+# Ver: 06.b.20261102    By: IWATA, Y.'s Agent AI
+# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
 ########################################
-a_template_conn_trigger  # サーバ等外部システム接続型 Act Trigger のテンプレート
+外部のシステムへ接続して送る Act を作るときの雛形
 
-動作概要
-    1. 起動時に接続設定を読み込み _connect / _send / _close のヘルパー関数を用意する
-    2. ループ内でキューからセグメントを受信し項目数の整合性を確認する
-    3. オフライン時は skip_on_offline 設定に応じてスキップまたは再接続待ちを行う
-    4. _send() でペイロードを構築して外部システムへ送信する
-    5. 接続断発生時は _close() でコネクションを閉じ is_online=False に移行する
-    6. stop_event が立ちキューが空になった時点でループを終了しコネクションをクローズする
+主要関数:
+a_template_conn_trigger  # 接続・送信・切断の流れと、オフライン時の扱いを備えた Act の雛形。
 
-接続設定
-    server_ip          : 接続先サーバの IP アドレス（デフォルト: "127.0.0.1"）
-    server_port        : 接続先サーバのポート番号（デフォルト: 9000）
-    timeout_sec        : 接続タイムアウト秒数（デフォルト: 5.0）
-    reconnect_interval_sec : 再接続インターバル秒数（デフォルト: 5.0）
-    ack_mode           : 送信ごとに ACK を待つか（デフォルト: False）
-    skip_on_offline    : オフライン時にセグメントをスキップするか（デフォルト: True）
-    encode             : 文字エンコーディング（デフォルト: "utf-8"）
-    sep                : データ区切り文字（デフォルト: "\\n"）
-    chunk              : 受信チャンクサイズ バイト（デフォルト: 1024）
+位置づけ: 新しい接続先へ送る Act は、この雛形の _connect / _send / _close を書き換えて作る。キューの扱いだけの雛形は tri_s12_act_tmpl_queue。
+設計意図: 接続が切れたときのオフライン移行・再接続・セグメントのスキップを雛形に含め、新しい Act でも同じ振る舞いになるようにする。
+前提・制約: 作り方は『新規トリガー開発ガイドライン』を参照。
 """
 MODULE_NAME = "ACT_Connect"
 
@@ -114,6 +102,17 @@ def a_template_conn_trigger(
     """
     サーバ等外部システム接続型 ActTrigger のテンプレート
     Mod: 2026.05.18    By: IWATA,Y.
+
+    [設定]（旧モジュール Docstring から移動。この雛形には設定例が無いため、ここに記載する）
+        server_ip              : 接続先サーバの IP アドレス（デフォルト: "127.0.0.1"）
+        server_port            : 接続先サーバのポート番号（デフォルト: 9000）
+        timeout_sec            : 接続タイムアウト秒数（デフォルト: 5.0）
+        reconnect_interval_sec : 再接続インターバル秒数（デフォルト: 5.0）
+        ack_mode               : 送信ごとに ACK を待つか（デフォルト: False）
+        skip_on_offline        : オフライン時にセグメントをスキップするか（デフォルト: True）
+        encode                 : 文字エンコーディング（デフォルト: "utf-8"）
+        sep                    : データ区切り文字（デフォルト: "\n"）
+        chunk                  : 受信チャンクサイズ バイト（デフォルト: 1024）
     """
     TRIGGER_NAME = "a_template_conn_trigger"  ####
     _SIG_OFFLINE = f"ConnectionFailed.comm.loop.{TRIGGER_NAME}"

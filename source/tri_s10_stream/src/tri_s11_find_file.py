@@ -4,46 +4,22 @@
 """
 ########################################
 # Find Trigger Module [File]
-# Ver: 07.d.20261001    By: IWATA, Y.'s Agent AI
-# Mod: モジュール名を tri_edge_XX_* から tri_sXX_* 形式に変更（tri_edge_11_find_file → tri_s11_find_file）
+# Ver: 07.f.20261102    By: IWATA, Y.'s Agent AI
+# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
 ########################################
-f_find_file_trigger   # フォルダを監視し、条件に該当したファイル情報をキューに流す
+フォルダに置かれたファイルを見つけて、そのファイルの情報を取り込む入口
 
-動作概要
-    1. f_find_file_trigger: monitor_dir をポーリングし、未処理ファイルを発見したらファイルメタ情報をキュー送信
-       - SQLite の seen_files DB で重複処理を防止
-       - pfx_sfx フィルタ・stable_check・ACK チェック・古ファイル除外に対応
-    2. stop_event が立つまでループを継続
+主要関数:
+f_find_file_trigger  # フォルダを監視し、条件に合うファイルの情報をキューに流す。
 
-出力列（f_find_file_trigger）
-    0: file_path
-    1: dir_path
-    2: dir_base_name
-    3: file_name
-    4: base_name
-    5: ext
-    6: size_kb
-    7: updated_time
-    8: yyyymmdd
-    9: yyyy
-    10: mm
-    11: dd
-    12: hh
-
-接続設定（f_find_file_trigger）
-    monitor_dir    : 監視対象ディレクトリ（デフォルト: "."）
-    search_subdir  : サブディレクトリを再帰的に検索するか（デフォルト: false）
-    pfx_sfx        : ファイル名フィルタ [[接頭語], [接尾語]]（デフォルト: ["", ".json"]）
-    stable_check_n : 安定チェック回数（デフォルト: 1）
-    check_ack      : ACK ファイルチェックを行うか（デフォルト: false）
-    ack_file_ext   : ACK ファイル拡張子（デフォルト: ".done"）
-    ignore_old     : 古いファイルを無視するか（デフォルト: true）
-    ignore_old_hour: 無視する閾値時間（デフォルト: 168 = 7日）
-    copy_found     : 発見ファイルをローカルにコピーするか（デフォルト: false）
-    copy_to        : コピー先ディレクトリ（デフォルト: "work/spool"）
-    interval_sec   : ポーリング間隔秒（デフォルト: 2）
+位置づけ: ファイルの中身は読まず、パス・名前・更新日時などの情報だけを渡す。中身を使う場合は tri_s11_find_text_csv / tri_s11_find_text_json を使う。ファイルの移動・アップロード等は Act（tri_s12_act_file、tri_s12_act_ftp 等）が行う。
+設計意図: 発見済みのファイルを SQLite に記録し、同じファイルを二重に処理しない。書込み途中のファイルを渡さないよう、サイズ・更新日時の安定や ack ファイルを確かめてから渡す。
+前提・制約: 発見済みの記録は再起動でクリアされるため、再起動後は残っているファイルを再び検出する（古いファイルは ignore_old で除外できる）。
 """
 MODULE_NAME = "FIND_File"
+
+N_BASE_COL = 13                 # 出力列 0～12（file_path ～ hh）の数。extra_col_def の列はこの後ろに付ける
+EXTRA_SRC_ALLOWED = ("filename", "dirname", "dirpath", "device", "const")  # ファイルを読まないため header は不可
 
 """standard library"""
 import csv
@@ -120,6 +96,45 @@ if __name__=='__main__':
 
 
 ########################################
+# Helper
+########################################
+
+def _load_extra_col_def(config: Dict[str, Any], n_col_def: int) -> Tuple[Optional[List[Dict[str, Any]]], Any]:
+    """
+    extra_col_def を読み、検証して、列番号順のリストにして返す（起動時に1回）
+    キーは 13（N_BASE_COL）から始まる連番、col_def の列数は 13 + 追加数 であること。使える src は EXTRA_SRC_ALLOWED
+    Returns: (extra_col_def のリスト（指定なしは None）, extra_col_default)
+    Mod: 2026.10.20    By: IWATA, Y.'s Agent AI
+    """
+    extra_col_default = config.get("extra_col_default", "__")
+    raw = config.get("extra_col_def", None)
+    if raw is None:
+        return None, extra_col_default # 指定なしは従来どおり（列数の確認もしない）
+
+    if not isinstance(raw, dict) or not raw:
+        raise ValueError(f"extra_col_def は列番号をキーとする辞書（{{\"{N_BASE_COL}\": {{...}}}}）で指定してください: {raw!r}")
+    bad = [k for k in raw.keys() if not str(k).strip().isdigit()]
+    if bad:
+        raise ValueError(
+            f"extra_col_def のキーは列番号（数字）で指定してください: {bad}。"
+            f"閉じ括弧 }} の位置を確認してください（後ろの設定が extra_col_def の中に入っている可能性があります）")
+
+    items = sorted(raw.items(), key=lambda kv: int(kv[0]))
+    keys = [int(k) for k, _v in items]
+    expected = list(range(N_BASE_COL, N_BASE_COL + len(items)))
+    if keys != expected:
+        raise ValueError(f"extra_col_def のキーは {N_BASE_COL} から始まる連番にしてください: 指定={keys}  期待={expected}")
+    if n_col_def != N_BASE_COL + len(items):
+        raise ValueError(
+            f"column の列数（{n_col_def}）が {N_BASE_COL} + extra_col_def の数（{len(items)}）と一致しません。"
+            f"column に {N_BASE_COL}～{N_BASE_COL + len(items) - 1} の列を定義してください")
+
+    extra_col_def = [v for _k, v in items]
+    utl.validate_extra_col_def(extra_col_def, allowed_src=EXTRA_SRC_ALLOWED)
+    return extra_col_def, extra_col_default
+
+
+########################################
 # Find Trigger Functions
 ########################################
 
@@ -131,7 +146,7 @@ def f_find_file_trigger(
     ) -> None:
     """
     フォルダを監視し、条件に該当したファイル名をキューに流す
-    Mod: 2026.03.31    By: IWATA,Y.
+    Mod: 2026.10.20    By: IWATA, Y.'s Agent AI（extra_col_def に対応）
     """
     TRIGGER_NAME = "f_find_file_trigger"
     
@@ -158,6 +173,9 @@ def f_find_file_trigger(
             os.makedirs(copy_to, exist_ok=True)
         
         interval_sec = config.get("interval_sec", 2)
+        
+        extra_col_def, extra_col_default = _load_extra_col_def(config, len(col_def))
+        base.output_log(MODULE_NAME, f"{TRIGGER_NAME} extra_col_def={extra_col_def} extra_col_default={extra_col_default!r}", log_file)
         
         base.output_log(MODULE_NAME, f"{TRIGGER_NAME} monitor_dir={monitor_dir} search_subdir={search_subdir} pfx_sfx={pfx_sfx} stable_check_n={stable_check_n} check_ack={check_ack} ignore_old={ignore_old} copy_found={copy_found} interval_sec={interval_sec}", log_file)
         
@@ -223,6 +241,9 @@ def f_find_file_trigger(
                 ts_dd = ts_.strftime("%d")
                 ts_hh = ts_.strftime("%H")
                 
+                # 追加列（extra_col_def。ファイル名・フォルダ名等は元のパスから求める）
+                extra_vals = utl.resolve_extra_col_values(f_path, extra_col_def, extra_col_default)
+                
                 """発見後処理"""
                 fpath_mod = f_path # 元のパスを保持
                 
@@ -259,7 +280,7 @@ def f_find_file_trigger(
                             ts_mm,
                             ts_dd,
                             ts_hh,
-                        ]
+                        ] + extra_vals
                     )
                 )
                 

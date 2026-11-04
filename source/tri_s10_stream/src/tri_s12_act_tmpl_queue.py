@@ -4,32 +4,20 @@
 """
 ########################################
 # Act Trigger Module [Queue Template]
-# Ver: 06.b.20261005    By: IWATA, Y.'s Agent AI
-# Mod: stq_prepare_sql に core と同じく coldef_to_table_col(col_def) を渡すよう統一（B-4）
+# Ver: 06.e.20261102    By: IWATA, Y.'s Agent AI
+# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
 ########################################
-a_template_imq_trigger   # インメモリキュー（IMQ）モードの後処理ワーカー Act Trigger テンプレート
-a_template_stq_trigger   # ストレージキュー（STQ）モードの後処理ワーカー Act Trigger テンプレート
+セグメントを受け取って処理する Act を作るときの雛形（キューの扱い・通知の仕組みを含む）
 
-動作概要
-    1. 起動時に列定義（col_def）と個別設定を初期化する
-    2. ループ内でキューからセグメントを受信し項目数の整合性を確認する
-    3. セグメントの一括処理（波形全体）を実行する（終点行（変化後）は core が除外して渡す。CUT_LAST_ROW 参照）
-    4. 続いてレコードごとの個別処理（波形各行）を実行する
-    5. STQ モードでは SQLite ストレージキューから行データを取得し処理後にステータスを更新する
-    6. stop_event が立ちキューが空になった時点でループを終了する
-    7. セグメントの処理が終わるたびに、運用系メトリクス（ACT_Queue）へ登録し、オンデマンド通知を要求する
-         last_seg_id         : 最新の処理セグメント id
-         total_segments      : 累計の処理セグメント件数
-         <列名>[row=<row>]   : notify_values で指定した列（loc）・行（row）の値
-       ※ IMQ は項目数の不一致でスキップしたセグメント、STQ は異常になったセグメントを数えない
+主要関数:
+a_template_imq_trigger    # インメモリのキュー（IMQ）から受け取って処理する Act の雛形。
+a_template_stats_trigger  # IMQ から受け取り、統計量を求めて処理する Act の雛形。
+a_template_stq_trigger    # ストレージのキュー（STQ / SQLite）から受け取って処理する Act の雛形。
+_notify_segment           # 処理したセグメントを運用系メトリクスへ登録し、通知を要求する。
 
-オンデマンド通知の設定（act_trigger）
-    teams_notify : true → セグメント処理ごとにオンデマンド通知を要求する（既定 true。false はメトリクス登録のみ）
-                   ※ 実際に送るかは Operator の teams_ondemand 設定による
-    notify_values: 通知する値の位置のリスト（既定 []）。例 [{"loc": 6, "row": 0}, {"loc": 6, "row": -1}]
-                   loc: 列番号（act 側。先頭4列はセグメントヘッダ）
-                   row: セグメント内の行番号（core が終点行を除いた後の0始まり。負の数は後ろから。-1=最後の行）
-                   範囲外の位置は値を "-" とする
+位置づけ: 新しい Act は、この雛形の「処理を書く場所」を書き換えて作る。外部へ接続する Act の雛形は tri_s12_act_tmpl_connect。
+設計意図: セグメント全体の処理と行ごとの処理を書く場所を分け、どちらにも対応できるようにする。処理するたびに指定した値を運用系メトリクスへ登録し、Teams 等への通知で処理の様子を確かめられるようにする。
+前提・制約: 実際に通知するかは Operator の teams_ondemand の設定による。
 """
 MODULE_NAME = "ACT_Queue"
 
@@ -84,6 +72,7 @@ except ModuleNotFoundError:
 """local module"""
 import src.tri_s01_error_if       as err
 from   src.tri_s01_error_if       import ErrorIF, SIGNAL_STOP
+from   src.tri_s10_stream_wave_stat import init_stats, calc_stats  # Calc Stats（Act 共通。a_template_stats_trigger で使う）
 
 """system dir, file"""
 system_root = base.get_system_root()
@@ -107,14 +96,14 @@ if __name__ == '__main__':
 def _notify_setup(config: Dict[str, Any], col_def: Dict[int, Any]) -> Tuple[bool, List[Tuple[str, int, int]]]:
     """
     オンデマンド通知の設定を読み、運用系メトリクスへ初期値を登録する
-    Mod: 2026.10.02    By: IWATA, Y.'s Agent AI
+    Mod: 2026.10.21    By: IWATA, Y.'s Agent AI（loc を Find と同じ列番号で書くように変更）
     Returns:
-        (teams_notify, [(メトリクスキー, loc, row), ...])
+        (teams_notify, [(メトリクスキー, loc（行の中の位置）, row), ...])
     """
     teams_notify = bool(config.get("teams_notify", True))
     items: List[Tuple[str, int, int]] = []
     for v in config.get("notify_values", []) or []:
-        loc = int(v["loc"])
+        loc = base.resolve_act_col(v["loc"], col_def, "notify_values.loc")  # Find と同じ列番号 → 行の中の位置
         row = int(v["row"])
         _def = col_def.get(loc)
         col_name = _def[0] if _def else f"col{loc}"
@@ -132,6 +121,13 @@ def _notify_segment(seg_id: Any, rows: Sequence[Sequence[Any]], teams_notify: bo
     """
     処理したセグメントを運用系メトリクスへ登録し、オンデマンド通知を要求する（範囲外の位置は "-"）
     Mod: 2026.10.02    By: IWATA, Y.'s Agent AI
+
+    [運用系メトリクス（ACT_Queue）]（旧モジュール Docstring から移動）
+        last_seg_id        : 最新の処理セグメント id
+        total_segments     : 累計の処理セグメント件数
+        <列名>[row=<row>]  : notify_values で指定した列（loc）・行（row）の値
+        <出力キー名>       : notify_stats で指定した統計量の値（a_template_stats_trigger のみ）
+        ※ IMQ は項目数の不一致でスキップしたセグメント、STQ は異常になったセグメントを数えない
     """
     base.metrics_set_last(MODULE_NAME, "last_seg_id", seg_id)
     base.metrics_add(MODULE_NAME, "total_segments", 1)
@@ -143,6 +139,32 @@ def _notify_segment(seg_id: Any, rows: Sequence[Sequence[Any]], teams_notify: bo
         base.metrics_set_last(MODULE_NAME, key, val)
     if teams_notify:
         base.metrics_notify(MODULE_NAME)
+
+
+def _notify_stats_setup(config: Dict[str, Any], out_keys: List[str]) -> List[str]:
+    """
+    notify_stats（通知する統計量の出力キー名）を読み、運用系メトリクスへ初期値を登録する（a_template_stats_trigger 用）
+    out_coldef に無い名前は ValueError（起動時に停止）
+    Mod: 2026.10.30    By: IWATA, Y.'s Agent AI
+    """
+    keys = [str(k) for k in (config.get("notify_stats", []) or [])]
+    unknown = [k for k in keys if k not in out_keys]
+    if unknown:
+        raise ValueError(f"notify_stats {unknown} are not in out_coldef (available: {out_keys})")
+    for key in keys:
+        base.metrics_set_last(MODULE_NAME, key, "-")
+    return keys
+
+
+def _notify_stats(stats_dict: Dict[str, Any], keys: List[str]) -> None:
+    """
+    計算した統計量のうち notify_stats の値を、運用系メトリクスへ登録する（値が出せなかった場合は "-"）
+    通知の要求は、この後の _notify_segment が行う
+    Mod: 2026.10.30    By: IWATA, Y.'s Agent AI
+    """
+    for key in keys:
+        val = stats_dict.get(key)
+        base.metrics_set_last(MODULE_NAME, key, "-" if val is None else val)
 
 
 ########################################
@@ -293,6 +315,121 @@ def a_template_imq_trigger(
 #               ※ 上限（seg_max_rows / seg_max_sec）による強制クローズのセグメントは、終点行が無いため除外しない
 a_template_imq_trigger.QMODE = "imq"
 a_template_imq_trigger.CUT_LAST_ROW = True  # 終点行（変化後）を core が除外して渡す
+
+
+def a_template_stats_trigger(
+    post_queue: queue.Queue,
+    col_def: Dict[int, Any],
+    config: Dict[str, Any],
+    stop_event: threading.Event
+) -> None:
+    """
+    統計量を計算して使う後処理ワーカー（Act Trigger）のテンプレート（IMQ）
+    起動時に init_stats で column_register_map / out_coldef を検証し、セグメントごとに calc_stats で統計量を計算する
+    Mod: 2026.10.30    By: IWATA, Y.'s Agent AI（新規作成）
+    """
+    TRIGGER_NAME = "a_template_stats_trigger"
+
+    """======== LOOP INIT ========"""
+    try:
+        base.output_log(MODULE_NAME, f"{TRIGGER_NAME} Before Loop Setting.", log_file)
+
+        # データ項目定義
+        n_col_def = len(col_def)#項目数
+        base.output_log(MODULE_NAME, f"n_col_def={n_col_def}  col_def={col_def}", log_file)
+
+        # 統計量の設定（column_register_map / out_coldef の検証・コンパイル。誤りは ValueError → 起動時に停止）
+        stats_ctx = init_stats(config, col_def, MODULE_NAME, TRIGGER_NAME)
+        # out_coldef を JSON に保存する場合（受信側がスキーマを参照する等）は、次の1行を使う（import に export_out_coldef を追加）
+        # export_out_coldef(stats_ctx.out_coldef, os.path.join(system_root, "output", f"output_column_define_{TRIGGER_NAME}.json"))
+
+        """####（個別設定を記述）####"""
+        base.output_log(MODULE_NAME, f"act trigger setting={None}", log_file)##
+
+        # オンデマンド通知（セグメントの値 notify_values / 統計量の値 notify_stats）
+        teams_notify, notify_items = _notify_setup(config, col_def)
+        notify_stat_keys = _notify_stats_setup(config, stats_ctx.out_keys)
+        base.output_log(MODULE_NAME,
+            f"teams_notify={teams_notify}  notify_values={notify_items}  notify_stats={notify_stat_keys}", log_file)
+
+    except Exception as e:
+        ErrorIF.report_exception(e, phase="startup", category="config", trigger_id=TRIGGER_NAME, log_file=log_file)
+        stop_event.set()
+        return None
+
+    """======== LOOP START ========"""
+    base.output_log(MODULE_NAME, f"{TRIGGER_NAME} Start Loop...", log_file)
+    while True:
+        """ キュー受信 """
+        try:
+            segment = post_queue.get(timeout=1.0)
+
+        except queue.Empty:
+            exit_loop = (
+                stop_event.is_set()      and
+                post_queue.qsize() == 0  and
+                getattr(post_queue, "unfinished_tasks", 0) == 0
+            )
+            if exit_loop: break
+            continue
+
+        if segment is None:
+            post_queue.task_done()
+            break
+
+        base.output_log(MODULE_NAME, f"{TRIGGER_NAME} ...Received Queue.")
+
+        """ セグメント処理 実行 """
+        try:
+            """項目の整合性（※現状、個数のみ）"""
+            n_col_act = len(segment[0])
+            if n_col_act != n_col_def:
+                base.output_log(MODULE_NAME,
+                f"Segment Columns NOT Match with Columns Define: seg_id={segment[0][0]}  Expected:{n_col_def}  Actual:{n_col_act}", log_file)
+                continue
+
+            """セグメントid"""
+            seg_id = segment[0][0]
+
+            """終点行（変化後）の除外は core が行う（CUT_LAST_ROW = True）"""
+
+            """統計量の計算（column_register_map の定義どおり。値が出せなかった項目は {出力キー名}_WARN に理由が入り、ログに出る）"""
+            stats_dict = calc_stats(stats_ctx, segment, seg_id)
+            #### TBD(C-4) #### 以下の print() はテンプレートの動作確認用。本番トリガーにコピーしたら削除するか、デバッグモード時のみの出力にすること
+            print(f"seg_id={seg_id}  rows={len(segment)}", flush=True)  #### TBD(C-4) ####
+            for _key in stats_ctx.base_col_names:  #### TBD(C-4) ####
+                print(f"  {_key:<24}{stats_dict.get(_key)}", flush=True)  #### TBD(C-4) ####
+
+            """####（処理内容を記述）####"""
+            # stats_dict は 出力キー名 → 値 の辞書（固定の seg_id / seg_ts_start / seg_ts_end / seg_rows ＋ out_coldef の列名）
+            # 列の順番どおりに並べる場合は  [stats_dict.get(c) for c in stats_ctx.base_col_names]
+            try:
+                pass####
+            except Exception as e:
+                """####（異常時）####"""
+                base.output_log(MODULE_NAME, f"Error in Processing Stats [{seg_id}]:\n{e}", log_file)
+
+            """オンデマンド通知（統計量の値 → 処理したセグメントの id・件数・指定した値）"""
+            _notify_stats(stats_dict, notify_stat_keys)
+            _notify_segment(seg_id, segment, teams_notify, notify_items)
+
+        except Exception as e:
+            _sig = ErrorIF.report_exception(e, phase="loop", category="data", trigger_id=TRIGGER_NAME, log_file=log_file)
+            if _sig == SIGNAL_STOP:
+                stop_event.set()
+                break # finally経由でtask_done()後にループ離脱
+            continue # ループ継続
+
+        finally:
+            post_queue.task_done()
+    """======== LOOP END ========"""
+
+    base.output_log(MODULE_NAME, f"{TRIGGER_NAME} Stop.", log_file)
+    return None
+
+# CUT_LAST_ROW: a_template_imq_trigger と同じ（終点行（変化後）を core が除外して渡す）
+a_template_stats_trigger.QMODE = "imq"
+a_template_stats_trigger.CUT_LAST_ROW = True  # 終点行（変化後）を core が除外して渡す
 
 
 def a_template_stq_trigger(

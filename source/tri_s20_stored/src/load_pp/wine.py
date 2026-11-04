@@ -4,19 +4,17 @@
 """
 ########################################
 # Data Load Module [Wine]
-# Ver: 01.c.20260930    By: IWATA, Y.'s Agent AI
-# Mod: 新規作成
+# Ver: 01.d.20261102    By: IWATA, Y.'s Agent AI
+# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
 ########################################
-データを読込み、DataFrameと列定義を返すデータロードモジュール
+Wine のデータセットを読み、分析に使えるデータと列定義にする（データロードモジュールの見本）
 
-動作概要
-    1. _00_load_raw()   : 生データを読込む
-    2. _10_preprocess() : 前処理
-    3. load_data()      : 公開用データアクセッサ
-    
-戻り値
-    df      : pandas.DataFrame
-    col_def : {"0": [name, dtype, num/cat, exp/obj, comment], ...}
+主要関数:
+load_data  # データと列定義を返す。
+
+位置づけ: データロードモジュールの1つ。設定の TITLE（Wine）から選ばれ、tri_s20_eda_runner に呼ばれる。新しいデータセットのモジュールを作るときの見本。
+設計意図: 読込み（_00_load_raw）と前処理（_10_preprocess）を分け、データセットごとに書き換える箇所をはっきりさせる。
+前提・制約: 戻り値の col_def は {"0": [name, dtype, num/cat, exp/obj, comment], ...}。
 """
 MODULE_NAME = "Wine"
 

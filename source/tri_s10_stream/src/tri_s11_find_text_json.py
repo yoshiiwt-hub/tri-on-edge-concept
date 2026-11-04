@@ -4,59 +4,17 @@
 """
 ########################################
 # Find Trigger Module [JSON]
-# Ver: 01.f.20261002    By: IWATA, Y.'s Agent AI
-# Mod: 読み取った後の処理（after_read: keep / delete / move / rename）を追加
+# Ver: 01.g.20261102    By: IWATA, Y.'s Agent AI
+# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
 ########################################
-f_read_json_trigger   # フォルダを監視し、JSON ファイルを読み込んで内容をキューに流す
+フォルダに置かれた JSON ファイルを読み、必要な値を抜き出してレコードとして取り込む入口
 
-動作概要
-    1. monitor_dir をポーリングし、未処理ファイルを発見したら utl.load_json でパース
-       - SQLite の seen_files DB で重複処理を防止
-       - pfx_sfx フィルタ・stable_check・ACKファイルチェック（任意）に対応
-    2. mapping_config に従って、JSON内容から共通データ(common)とループリスト(to_record)を抽出する
-       - common: 対象キーをリストで指定（そのまま値取得）または辞書で指定（datetime_convert等の変換付き）
-       - to_record: リストパス配下の各要素から item_key_map の値を取り出し、common + 要素値でレコード化
-       - handle_json=true の場合、JSONファイル自体（ファイル名）も1レコードとして送信する
-    3. 各レコードは col_def の dtype に従って型変換してからキューへ送信し、
-       ファイル末尾でセグメント区切り（'____'）を送信する（1ファイル = 1セグメント）
-    4. ファイルI/Oエラー（OSError/PermissionError）はオフラインモードへ移行し、
-       同種エラーが頻発（デフォルト: 60秒に5回）していれば offline_interval_sec だけ読み取りを
-       スキップする（tri_edge_11_find_read_csv.py と同様の設計）。それ以外の予期しない例外は
-       オフライン化せず、そのファイルをスキップして継続する
-    5. 読み取った後、after_read に従ってファイルを削除・移動・リネームする（既定 keep = 残す）
-       ack_file_ext 指定時は、delete / move / rename の場合に ACK ファイルも削除する
-    6. stop_event が立つまでループを継続
+主要関数:
+f_read_json_trigger  # フォルダを監視し、JSON ファイルを読んでレコードにしてキューに流す（1ファイル = 1セグメント）。
 
-出力列
-    col_def の列順に、common_data（dir_path, file_name, common_conf の値）+ item_key_map の値
-    （または handle_json 時は file_name）が入る
-    （queue_out.put で送る values の長さ・順序は col_def と完全に一致させること）
-
-接続設定
-    monitor_dir      : 監視対象ディレクトリ（デフォルト: "."）
-    search_subdir    : サブディレクトリを再帰的に検索するか（デフォルト: false）
-    pfx_sfx          : ファイル名フィルタ [[接頭語], [接尾語]]（デフォルト: [[], [".json"]]）
-    encoding         : JSONファイルの文字エンコーディング（デフォルト: "utf-8-sig"）
-    stable_check_n   : 安定チェック回数（デフォルト: 1）
-    interval_sec     : ポーリング間隔秒（デフォルト: 2）
-    ack_file_ext     : ACKファイル拡張子（空文字列の場合はチェックしない、デフォルト: ""）
-    offline_interval_sec: 読込みエラー頻発検知後、次に読み取りを再開するまでの待機秒数（デフォルト: 30）
-    mapping_config   : JSON内容の抽出定義。
-                          "common"   : {出力キー: [パス...] または {"path": [...], "action": "datetime_convert", "src_fmt":..., "dst_fmt":...}}
-                          "to_record": {"list_path": [...], "item_key_map": {出力キー: JSON内キー}}
-    handle_json      : JSONファイル自体（ファイル名）も1レコードとして送信するか（デフォルト: false）
-    time_format / time_default / int_default / float_default / str_default
-                     : dtype cast のフォーマット・デフォルト値（base.set_cast_dtype と同じ）
-    after_read       : 読み取った後の処理（デフォルト: "keep"）
-                          "keep"  : 残す（従来どおり。seen_files は再起動でクリアされるため、再起動後に読み直す）
-                          "delete": 削除する
-                          "move"  : move_to へ移動する（監視フォルダと同じ・search_subdir=true で監視フォルダ配下は起動時エラー）
-                          "rename": rename_pfx_sfx = [接頭語, 接尾語] で名前を変える（接頭語は元の名前の前、接尾語は拡張子の後。
-                                    未指定・空欄の側は付けない）。rename 済みの名前（接頭語で始まり接尾語で終わる）は監視対象から外す
-                        レコードとセグメント区切りを送り、読み取り済みとして記録した後に行う。読み取りに失敗したファイルには行わない
-                        移動先・リネーム先に同名ファイルがある場合は上書きする
-    move_to          : 移動先フォルダ（after_read="move" の場合に必須。system_root からの相対パス可）
-    rename_pfx_sfx   : [接頭語, 接尾語]（after_read="rename" の場合）
+位置づけ: 装置や他システムが出力する JSON ファイルを取り込む。区切りテキストは tri_s11_find_text_csv を使う。
+設計意図: JSON の構造に合わせて、全レコード共通の値（common）と、繰り返し部分から作るレコード（to_record）を設定（mapping_config）で抜き出せるようにし、JSON の形が変わってもコードを変えずに済むようにする。ファイルの読込み失敗が続く場合は、一定時間読込みを休んでから自動で再開する。
+前提・制約: 読み取った後のファイルは、設定（after_read）に従って残す・削除・移動・リネームする。
 """
 MODULE_NAME = "FIND_Json"
 
@@ -142,6 +100,13 @@ def f_read_json_trigger(
     """
     指定フォルダを監視し、JSONを読込んで展開
     Mod: 2026.10.02    By: IWATA, Y.'s Agent AI（after_read を追加）
+
+    [動作の要点]（旧モジュール Docstring から移動）
+        ファイル I/O エラー（OSError / PermissionError）はオフラインモードへ移行し、同種エラーが頻発（デフォルト: 60秒に5回）していれば
+        offline_interval_sec だけ読み取りをスキップする。それ以外の予期しない例外はオフライン化せず、そのファイルをスキップして継続する
+        handle_json=true の場合、JSON ファイル自体（ファイル名）も1レコードとして送る
+        after_read が delete / move / rename の場合、ack_file_ext を指定していれば ACK ファイルも削除する
+        出力列: col_def の列順に、common_data（dir_path, file_name, common の値）+ item_key_map の値（handle_json 時は file_name）
     """
     TRIGGER_NAME = "f_read_json_trigger"
 

@@ -4,61 +4,17 @@
 """
 ########################################
 # Act Trigger Module [Remote File (SMB)]
-# Ver: 02.c.20261006    By: IWATA, Y.'s Agent AI
-# Mod: remote_dir / move_to に数値を指定すると col_def のインデックスとみなし、行ごとにその列の値をアップロード先・移動先にする
+# Ver: 02.e.20261102    By: IWATA, Y.'s Agent AI
+# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
 ########################################
-a_send_remote_file_trigger  # セグメントの file_path 列のファイルを SMB 共有フォルダへアップロードする
+Find が見つけたファイルを、ネットワーク上の共有フォルダ（SMB）へ送り届ける出口
 
-動作概要
-    1. キューからセグメントを受信し、各行の file_path 列からファイルパスを取得（終点行は除外）
-       フルパス（絶対パス）のファイルのみ処理し、相対パス・フォルダは異常としてログに残す
-    2. 安定チェック（サイズ・更新時刻）を行う
-    3. SMB 共有フォルダへアップロードする（<名前>.tmp に書き込んでからリネーム）
-    4. アップロード後、ローカルのファイルを after_upload に従って処理する（keep / delete / move / rename）
-    5. 正常は画面表示のみ、異常はログファイルにも残し、運用系メトリクスへ報告する
-         last_ok_file / total_ok_files / last_ng_file / total_ng_files
-    ※ アップロード・後処理・報告は tri_s12_act_comb_rdb_smb と同じ挙動
+主要関数:
+a_send_remote_file_trigger  # セグメントの file_path 列のファイルを SMB の共有フォルダへアップロードし、送った後のファイルを後処理する。
 
-■ 入力設定
-    file_path_col : ファイルパスの列番号（デフォルト: 4。find 側 col:0 は act 側 col:4 になる）
-    stable_check_n: 安定チェック回数（デフォルト: 1。0 でチェックしない）
-
-■ SMB接続設定（tri_s11_find_smb と同じキー名）
-    smb_server    : SMB サーバのホスト名または IP アドレス（必須）
-    smb_port      : SMB ポート番号（デフォルト: 445）
-    smb_share     : SMB 共有名（必須）
-    smb_username  : 認証ユーザ名（省略可、環境変数 SMB_USERNAME からも取得）
-    smb_password  : 認証パスワード（省略可、環境変数 SMB_PASSWORD からも取得）
-    smb_domain    : ドメイン名（省略可、環境変数 SMB_DOMAIN からも取得）
-    remote_dir    : アップロード先のリモートサブディレクトリ（デフォルト: 共有ルート。無ければ起動時に作成。数値なら列指定。下記参照）
-    overwrite     : リモートに同じ名前がある場合に上書きするか（デフォルト: true。false ならスキップ）
-
-■ アップロード後の処理
-    after_upload  : "keep"（残す。デフォルト）/ "delete"（削除）/ "move"（move_to へ移動）/ "rename"（リネーム）
-    move_to       : 移動先のローカルフォルダ（after_upload="move" の場合に必須。数値なら列指定。下記「移動・コピー先を列の値で指定」参照）
-    rename_pfx_sfx: [接頭語, 接尾語]（after_upload="rename" の場合）。接頭語は元の名前の前、接尾語は拡張子の後に付ける
-                    （例 ["DONE__", ".DONE"]: LOT001_a.csv → DONE__LOT001_a.csv.DONE）。未指定・空欄の側は付けない
-    ※ "keep"、または "rename" で接頭語・接尾語とも空の場合は、ファイルが残るため、送信済み（パスと更新時刻）を
-       SQLite に記録して再送しない
-
-■ フォルダ構造の再現（アップロード先・移動先 共通）
-    make_subdir_level: アップロード先（remote_dir の下）と after_upload="move" の移動先（move_to の下）に、
-                     元ファイルのフォルダを何階層再現するか（既定 0）。無いフォルダは作成する
-         0 : 再現しない（ファイルのみ）
-         1 : 元ファイルの親フォルダ        例 C:/in/A/B/x.csv → remote_dir/B/x.csv
-         2 : 親々フォルダ/親フォルダ       例 C:/in/A/B/x.csv → remote_dir/A/B/x.csv
-        -1 : パスにあるフォルダ全て        例 C:/in/A/B/x.csv → remote_dir/in/A/B/x.csv
-       渡されたパスにある範囲のみ（ドライブ・UNC の //server/share は含めない。指定より浅いパスはある分だけ）
-
-■ 移動・コピー先を列の値で指定（remote_dir / move_to に数値を指定）
-    remote_dir / move_to に数値を指定すると col_def のインデックスとみなし、その列の値をフォルダとして使う（ファイルごとに、その行の値）
-      - 値がファイルパス（末尾の要素に拡張子あり）なら、そのフォルダを使う
-      - remote_dir: 相対パスは共有フォルダ（smb_share）からの相対。絶対パスは //smb_server/smb_share 配下の UNC のみ
-                    （別の共有・ドライブ指定・".." を含むパスは異常）
-      - move_to   : 相対パスは system_root から、絶対パスはそのまま
-      - 無いフォルダは作成する。値が空・"____"・使えない場合は処理せず異常として記録する（ファイルは元の場所に残る）
-      - make_subdir_level は、この列の値で決めたフォルダの下に適用する
-      例: "remote_dir": 7（列7の値 "upload/LOT001" → //smb_server/smb_share/upload/LOT001 へ）
+位置づけ: 上位側の共有フォルダへファイルを集約する場合に使う。DB への登録と組み合わせる場合は tri_s12_act_comb_rdb_smb を使う。
+設計意図: 一時名（.tmp）に書き込んでからリネームし、受け手が書込み途中のファイルを読まないようにする。保存先のフォルダは、固定のパスのほか、行の値（ロット番号等）で行ごとに変えられるようにする。送った後のファイルを残す場合は、送信済みを SQLite に記録して二重に送らない。
+前提・制約: パスワードは環境変数（SMB_PASSWORD）で渡す。絶対パスのファイルのみ扱う。
 """
 MODULE_NAME = "ACT_SMB"
 
@@ -174,6 +130,17 @@ def a_send_remote_file_trigger(
     """
     セグメントの file_path 列のファイルを SMB 共有フォルダへアップロードする
     Mod: 2026.10.06    By: IWATA, Y.'s Agent AI（remote_dir / move_to に数値を指定すると、その列の値をアップロード先・移動先にする）
+
+    [動作の要点]（旧モジュール Docstring から移動）
+        相対パス・フォルダは処理せず、異常としてログに残す
+        remote_dir / move_to に数値を指定した場合（Find と同じ列番号。行ごとにその列の値をフォルダにする）:
+            値がファイルパス（末尾の要素に拡張子あり）なら、そのフォルダを使う
+            remote_dir: 相対パスは共有フォルダ（smb_share）からの相対。絶対パスは //smb_server/smb_share 配下の UNC のみ
+                        （別の共有・ドライブ指定・".." を含むパスは異常）
+            move_to   : 相対パスは system_root から、絶対パスはそのまま
+            無いフォルダは作成する。値が空・"____"・使えない場合は処理せず異常として記録する（ファイルは元の場所に残る）
+            make_subdir_level は、この列の値で決めたフォルダの下に適用する
+        運用系メトリクス: last_ok_file / total_ok_files / last_ng_file / total_ng_files（正常は画面表示のみ、異常はログファイルにも残す）
     """
     TRIGGER_NAME = "a_send_remote_file_trigger"
 
@@ -184,9 +151,7 @@ def a_send_remote_file_trigger(
         base.output_log(MODULE_NAME, f"n_col_def={n_col_def}", log_file)
 
         # ---- 入力設定 ----
-        file_path_col = int(config.get("file_path_col", 4))
-        if not (0 <= file_path_col < n_col_def):
-            raise ValueError(f"file_path_col={file_path_col} out of range (0-{n_col_def-1})")
+        file_path_col = base.resolve_act_col(config.get("file_path_col", 0), col_def, "file_path_col")  # Find と同じ列番号
         stable_check_n = int(config.get("stable_check_n", 1))
 
         # ---- アップロード後の処理 ----

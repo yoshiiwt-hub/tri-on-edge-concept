@@ -4,25 +4,18 @@
 """
 ########################################
 # Act Trigger Module [Viz Demo]
-# Ver: 05.a.20261004    By: IWATA, Y.'s Agent AI
-# Mod: 終点行の除外を core へ移し CUT_LAST_ROW で宣言。a_plot_overlay_web_trigger も a_plot_segment_trigger と同じく終点行を除外する（B-2）
+# Ver: 05.c.20261102    By: IWATA, Y.'s Agent AI
+# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
 ########################################
-a_plot_segment_trigger     # 各セグメントをグラフ画像（PNG）に保存する Act Trigger
-a_plot_overlay_web_trigger # 複数セグメントの波形重ね合わせプロットを Flask Web で配信する Act Trigger
+セグメントの波形をグラフにして見せる、可視化のデモ
 
-動作概要
-    1. キューからセグメントを受信
-    2. a_plot_segment_trigger: セグメントの指定列（plot_target_loc）値を折れ線グラフ化して PNG 保存
-       - ack_ext 指定時は保存後に .done ファイルを作成
-    3. a_plot_overlay_web_trigger: セグメントの指定列値を蓄積して波形重ね合わせグラフを生成
-       - Flask で overlay.png を Web 配信し、2 秒ごとに自動リフレッシュ
+主要関数:
+a_plot_segment_trigger      # セグメントごとに波形を折れ線グラフにして、PNG で保存する。
+a_plot_overlay_web_trigger  # 複数のセグメントの波形を重ねたグラフを、Web（Flask）で配信する。
 
-接続設定
-    plot_target_loc : プロット対象の col_def 列インデックス（デフォルト: 0）
-    save_dir        : 画像ファイルの保存先ディレクトリ（デフォルト: "output"）
-    ack_ext         : 完了 ACK ファイルの拡張子（省略可）
-    web_port        : Flask Web サーバのポート番号（デフォルト: 8000）
-    max_history     : 重ね合わせセグメント数の最大値（デフォルト: 50）
+位置づけ: 切り出したセグメントの形を確かめるためのデモ・雛形。画面に直接表示する場合は tri_s12_act_viz_tk_* を使う。
+設計意図: 重ね描きは直近のセグメントだけを保持し（max_history）、長時間動かしてもメモリが増え続けないようにする。
+前提・制約: matplotlib が必要。Web 配信には Flask が必要。
 """
 MODULE_NAME = "ACT_VIZ"
 
@@ -121,7 +114,7 @@ def a_plot_segment_trigger(
     try:
         base.output_log(MODULE_NAME, f"{TRIGGER_NAME} Start.", log_file)
         matplotlib.use("Agg") # GUI不要のバックエンド
-        target_loc   = config.get("plot_target_loc", 0) + 4 # 0:3 seg_id seg_ts seg_ind seg_status
+        target_loc   = base.resolve_act_col(config.get("plot_target_loc", 0), col_def, "plot_target_loc")  # Find と同じ列番号 → 行の中の位置
         save_dir = os.path.join(system_root, config.get("save_dir", "output"))####
         os.makedirs(save_dir, exist_ok=True)
         ack_ext  = config.get("ack_ext", "")
@@ -265,7 +258,7 @@ def a_plot_overlay_web_trigger(
         matplotlib.use("Agg") # GUI不要のバックエンド
         
         # 設定
-        target_loc   = config.get("plot_target_loc", 0) + 4 # 0:3 seg_id seg_ts seg_ind seg_status
+        target_loc   = base.resolve_act_col(config.get("plot_target_loc", 0), col_def, "plot_target_loc")  # Find と同じ列番号 → 行の中の位置
         annotation   = col_def.get(target_loc, "")[4]
         port         = config.get("web_port", 8000)
         save_dir     = os.path.join(system_root, config.get("save_dir", "work/spool/"))

@@ -4,18 +4,19 @@
 """
 ########################################
 # Agent Module [Socket Server]
-# Ver: 01.d.20261001    By: IWATA, Y.'s Agent AI
-# Mod: モジュール名を tri_edge_XX_* から tri_sXX_* 形式に変更（tri_edge_19_socket_server_agent → tri_s19_socket_server_agent）
+# Ver: 01.e.20261102    By: IWATA, Y.'s Agent AI
+# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
 ########################################
+Agentic Trigger のエージェント側の見本（ソケットサーバー）
 
-動作概要
-    1. 環境変数（TRIGGER_NAME / TRIGGER_SYSTEM_ROOT / BULK_READ 等）から設定を読み込む
-    2. TCP ソケットサーバを起動し、親トリガー（f_agentic_trigger 等）からの接続を待機
-    3. GET リクエストを受信したら PLC 等から最新値を取得して JSON 形式で返す
-    4. ACK 受信で次の取得サイクルへ、NACK 受信で同じ値を再送
-    5. AGENT_STOP_FILE が存在する場合はサーバを終了
-    6. ハートビートファイル（TRIGGER_HB_FILE）の更新を確認し、タイムアウトで自己終了
- - NOT to Use f-string for Retrofit.
+主要関数:
+gen_value             # 見本用の値を作る（実際のエージェントでは、PLC 等からの取得に置き換える）。
+_watch_control_files  # 停止ファイルとハートビートを監視し、親トリガーが止まったら自己停止する。
+recv_until_delimiter  # 区切り文字まで、ソケットから受信する。
+
+位置づけ: tri_s11_find_agentic（f_agentic_trigger）がサブプロセスとして起動する。Find からの GET 要求に値を JSON で返し、ACK で次の値へ進み、NACK で同じ値を送り直す。
+設計意図: TriEdge 本体に組み込めない処理（重いライブラリ、32bit / 64bit の混在など）を、別のプロセスに分けるための雛形とする。新しいエージェントは、この見本の値の取得部分を置き換えて作る。
+前提・制約: f-string を使わない（Retrofit のため）。設定は、同じフォルダの tri_s19_socket_server_agent.json と、親トリガーが渡す環境変数で受け取る。
 """
 MODULE_NAME = "AGENT"
 AGENT_NAME = "tri_s19_socket_server_agent"

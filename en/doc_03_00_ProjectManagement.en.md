@@ -2,9 +2,9 @@
 
 　This document describes how development projects related to Tri-On-Edge are run and managed.
 
-- Ver: 02.e.20260824
-- By: IWATA,Y.
-- Mod: Added description of the Leader Team, AI-PMO, and AI usage
+- Ver: 02.f.20261025
+- By: IWATA, Y.'s Agent AI
+- Mod: Added design study to the development / evaluation process
 
 ---
 
@@ -99,6 +99,14 @@ Parent Document
   - Feed the development policy, coding rules, etc. into the generative AI to reduce variance/unevenness (Mura) in output (quality) (managing the SSOT/Single Source of Truth of information; making work standards explicit).
 
 ## Development / Evaluation Process
+
+### Design Study
+
+- As the first step of development, carry out a design study and have it reviewed.
+  - Check the current state (related modules, functions, and line numbers) and make the premises of the approach clear.
+  - List candidate approaches, compare their advantages, disadvantages, and scope of impact, and present a recommended one.
+- If the changes are clear, the design study may be skipped. In that case, the leader instructs that it be skipped.
+  - Workers (including generative AI) must not skip it on their own judgment.
 
 ### Before Coding
 

@@ -4,53 +4,17 @@
 """
 ########################################
 # Find Trigger Module [Remote File (SMB)]
-# Ver: 01.d.20261001    By: IWATA, Y.'s Agent AI
-# Mod: モジュール名を tri_edge_XX_* から tri_sXX_* 形式に変更（tri_edge_11_find_smb → tri_s11_find_smb）
+# Ver: 01.e.20261102    By: IWATA, Y.'s Agent AI
+# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
 ########################################
-f_find_remote_file_trigger  # SMB共有フォルダを監視し、未処理ファイルのパスをキューに流す
+ネットワーク上の共有フォルダ（SMB）にあるファイルを監視して取り込む入口
 
-動作概要
-    1. smbclient で SMB 共有フォルダに接続し、ファイル一覧を取得
-    2. pfx_sfx フィルタでファイル名の接頭語・接尾語を確認
-    3. ignore_old 設定で古いファイルをスキップ
-    4. SQLite の seen_files DB で発見済みかを確認（重複処理防止）
-    5. 安定チェック（サイズ・更新時刻）・ACK ファイルチェックを実施
-    6. copy_found=true の場合、ローカルにコピーしてから queue_out に送信
-    7. 発見済みファイルを DB に記録して次回スキップ
+主要関数:
+f_find_remote_file_trigger  # SMB の共有フォルダを監視し、未処理のファイル情報をキューに流す。
 
-出力列
-    0: file_path   (ファイルのフルパス、copy_found=true の場合はローカルコピー先)
-    1: dir_path
-    2: dir_base_name
-    3: file_name
-    4: base_name
-    5: ext
-    6: size_kb
-    7: updated_time
-    8: yyyymmdd
-    9: yyyy
-    10: mm
-    11: dd
-    12: hh
-
-■ 接続設定
-    smb_server    : SMB サーバのホスト名または IP アドレス（必須）
-    smb_port      : SMB ポート番号（デフォルト: 445）
-    smb_share     : SMB 共有名（必須）
-    smb_username  : 認証ユーザ名（省略可、環境変数 SMB_USERNAME からも取得）
-    smb_password  : 認証パスワード（省略可、環境変数 SMB_PASSWORD からも取得）
-    smb_domain    : ドメイン名（省略可、環境変数 SMB_DOMAIN からも取得）
-    remote_dir    : 監視対象のリモートサブディレクトリ（デフォルト: 共有ルート）
-    search_subdir : サブディレクトリを再帰的に検索するか（デフォルト: false）
-    pfx_sfx       : ファイル名フィルタ [[接頭語], [接尾語]]（デフォルト: [[""], [".csv", ".json"]]）
-    stable_check_n: 安定チェック回数（デフォルト: 1）
-    check_ack     : ACK ファイル存在チェックを行うか（デフォルト: false）
-    ack_file_ext  : ACK ファイル拡張子（デフォルト: ".done"）
-    ignore_old    : 古いファイルを無視するか（デフォルト: true）
-    ignore_old_hour: 無視する閾値時間（デフォルト: 168 = 7日）
-    copy_found    : 発見ファイルをローカルにコピーするか（デフォルト: false）
-    copy_to       : ローカルコピー先ディレクトリ（デフォルト: "work/spool"）
-    interval_sec  : ポーリング間隔秒（デフォルト: 5）
+位置づけ: ローカルのフォルダを監視する tri_s11_find_file の、共有フォルダ版。出力列は tri_s11_find_file と同じ。
+設計意図: OS にドライブを割り当てなくても、設定だけで共有フォルダに接続できるようにする。発見済みのファイルを SQLite に記録し、同じファイルを二重に処理しない。必要に応じてローカルにコピーしてから渡し、後続の処理が共有フォルダの通信に左右されないようにする。
+前提・制約: パスワードは環境変数（SMB_PASSWORD）で渡す。
 """
 MODULE_NAME = "FIND_SMB"
 

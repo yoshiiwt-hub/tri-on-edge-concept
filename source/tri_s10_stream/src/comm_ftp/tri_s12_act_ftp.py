@@ -4,47 +4,17 @@
 """
 ########################################
 # Act Trigger Module [FTP Client]
-# Ver: 02.a.20261004    By: IWATA, Y.'s Agent AI
-# Mod: 終点行の除外を各 Act の [:-1] から core へ移し、CUT_LAST_ROW 属性で宣言する形に変更（B-2）
+# Ver: 02.c.20261102    By: IWATA, Y.'s Agent AI
+# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
 ########################################
-a_send_ftp_trigger  # セグメントの file_path 列のファイルを FTP サーバへ送信する
+Find が見つけたファイルを、上位側の FTP サーバーへ送り届ける出口
 
-動作概要
-    1. キューからセグメントを受信し、各行の file_path 列からファイルパスを取得（終点行は除外）
-       フルパス（絶対パス）のファイルのみ処理し、相対パス・フォルダは異常としてログに残す
-    2. 安定チェック（サイズ・更新時刻）を行う
-    3. FTP サーバの remote_dir へ送信する（remote_dir が無ければ上の階層から順に作成）
-       atomic=true の場合は <名前>.temp で送信してから本来の名前にリネーム（失敗時は .temp を削除）
-    4. 送信後、ローカルのファイルを after_upload に従って処理する（keep / delete / move / rename）
-    5. 正常は画面表示のみ、異常はログファイルにも残し、運用系メトリクスへ報告する
-         last_ok_file / total_ok_files / last_ng_file / total_ng_files
-    ※ 後処理・報告は tri_s12_act_comb_rdb_smb と同じ挙動
-    ※ 接続は最初の送信時に行い、以後は使い回す（切断時は次の送信時に再接続）
+主要関数:
+a_send_ftp_trigger  # セグメントの file_path 列のファイルを FTP サーバーへ送信し、送った後のファイルを後処理する。
 
-■ 入力設定
-    file_path_col : ファイルパスの列番号（デフォルト: 4。find 側 col:0 は act 側 col:4 になる）
-    stable_check_n: 安定チェック回数（デフォルト: 1。0 でチェックしない）
-
-■ FTP接続設定（環境変数。find ftp（FTPサーバ）の FTP_HOST 等とは別）
-    FTP_SEND_HOST : FTP サーバのホスト名または IP アドレス（必須）
-    FTP_SEND_PORT : FTP サーバのポート番号（デフォルト: 21）
-    FTP_SEND_USER : FTP ユーザ名（必須）
-    FTP_SEND_PASS : FTP パスワード
-
-■ 送信設定
-    remote_dir    : FTP サーバ内の保存先フォルダ（デフォルト: ログイン直後のフォルダ。"/" 始まりは絶対パス）
-    atomic        : true → <名前>.temp で送信してからリネーム（デフォルト: false）
-    overwrite     : サーバに同じ名前がある場合に上書きするか（デフォルト: true。false ならスキップ）
-    passive       : パッシブモードを使うか（デフォルト: true）
-    timeout_sec   : 通信タイムアウト秒（デフォルト: 30）
-
-■ アップロード後の処理
-    after_upload  : "keep"（残す。デフォルト）/ "delete"（削除）/ "move"（move_to へ移動）/ "rename"（リネーム）
-    move_to       : 移動先のローカルフォルダ（after_upload="move" の場合に必須）
-    rename_pfx_sfx: [接頭語, 接尾語]（after_upload="rename" の場合）。接頭語は元の名前の前、接尾語は拡張子の後に付ける
-                    （例 ["DONE__", ".DONE"]: LOT001_a.csv → DONE__LOT001_a.csv.DONE）。未指定・空欄の側は付けない
-    ※ "keep"、または "rename" で接頭語・接尾語とも空の場合は、ファイルが残るため、送信済み（パスと更新時刻）を
-       SQLite に記録して再送しない
+位置づけ: 送り先が FTP サーバーしか受け付けない場合に使う。後処理・異常の報告は tri_s12_act_smb、tri_s12_act_comb_rdb_smb と同じ考え方。
+設計意図: 一時名で送ってから正式名にリネームする方式（atomic）を選べるようにし、受け手が送信途中のファイルを読まないようにする。送った後のファイルを残す場合は、送信済みを SQLite に記録して二重に送らない。
+前提・制約: 接続情報は環境変数（FTP_SEND_HOST / FTP_SEND_PORT / FTP_SEND_USER / FTP_SEND_PASS）で渡す（Find の FTP サーバー用とは別）。絶対パスのファイルのみ扱う。
 """
 MODULE_NAME = "ACT_FTP"
 
@@ -192,6 +162,13 @@ def a_send_ftp_trigger(
     """
     セグメントの file_path 列のファイルを FTP サーバへ送信する
     Mod: 2026.10.04    By: IWATA, Y.'s Agent AI（相対パス・フォルダは処理しない。A-16）
+
+    [動作の要点]（旧モジュール Docstring から移動）
+        相対パス・フォルダは処理せず、異常としてログに残す
+        remote_dir が無ければ上の階層から順に作成する（"/" 始まりは絶対パス、それ以外はログイン直後のフォルダから）
+        atomic=true の場合は <名前>.temp で送信してからリネーム（失敗時は .temp を削除）
+        接続は最初の送信時に行い、以後は使い回す（切断時は次の送信時に再接続）
+        運用系メトリクス: last_ok_file / total_ok_files / last_ng_file / total_ng_files（正常は画面表示のみ、異常はログファイルにも残す）
     """
     TRIGGER_NAME = "a_send_ftp_trigger"
 
@@ -202,9 +179,7 @@ def a_send_ftp_trigger(
         base.output_log(MODULE_NAME, f"n_col_def={n_col_def}", log_file)
 
         # ---- 入力設定 ----
-        file_path_col = int(config.get("file_path_col", 4))
-        if not (0 <= file_path_col < n_col_def):
-            raise ValueError(f"file_path_col={file_path_col} out of range (0-{n_col_def-1})")
+        file_path_col = base.resolve_act_col(config.get("file_path_col", 0), col_def, "file_path_col")  # Find と同じ列番号
         stable_check_n = int(config.get("stable_check_n", 1))
 
         # ---- FTP接続設定（環境変数） ----

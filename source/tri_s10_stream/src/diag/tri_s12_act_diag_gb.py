@@ -4,62 +4,18 @@
 """
 ########################################
 # Act Trigger Module [Guard Band Diagnosis]
-# Ver: 02.b.20261005    By: IWATA, Y.'s Agent AI
-# Mod: 端末情報の抽出を tri_s19_util.get_device_info_to_add に集約（B-9）
+# Ver: 02.d.20261102    By: IWATA, Y.'s Agent AI
+# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
 ########################################
-a_gb_diag_trigger  # 波形データを事前学習済みガードバンドと比較し、異常判定してCSVへ保存する Act Trigger
+波形を、事前に学習したガードバンド（上限・下限の帯）と比べて、異常な波形をエッジで見つける
 
-動作概要
-    1. 起動時に models（複数モデルの定義）を全て検証・コンパイルする
-       （モデルごとのガードバンド定義CSVを事前に読込んでおく。実行中の都度読込みはしない）
-    2. ループ内でキューからセグメントを受信し項目数の整合性を確認する
-    3. セグメントの終点行（変化後）を除外してから判定する
-    4. model_select_col_idx の値で使用するモデルを選択する
-       （該当モデルが無ければ default_model にフォールバック。それも無ければ判定をスキップする）
-    5. セグメント内の各行（位置＝seg_index相当）について、選択したモデルのtarget_col_idxの値を
-       ガードバンド定義の上限・下限と比較し、異常点を判定する
-    6. セグメント内に異常点が1つでもあれば、そのセグメントを異常波形と判定する
-    7. 1セグメントにつき、ヘッダ+1行の判定結果CSVファイルを1つ保存する
-       （seg_id・異常波形フラグ・異常点数・異常点インデックス一覧・異常点の実測値一覧・使用モデル名を含む）
-       ※ 異常点の実測値はJSON出力にのみ含む（波形の生データCSV保存は別途 save_normal_wave/save_anomaly_wave で対応）
-    8. save_normal_wave / save_anomaly_wave が有効な場合、判定結果に応じて
-       波形の生データ（全行）も別途CSVで保存する（save_csv.py と同じ5行ヘッダー形式）
-    9. device_key_to_add が指定されている場合は端末情報を行に付与して出力する
-    10. ack_ext が指定されている場合は CSV 保存後に ACK ファイル（.done 等）を作成する
-    11. stop_event が立ちキューが空になった時点でループを終了する
+主要関数:
+a_gb_diag_trigger  # 波形をガードバンドと比べて異常を判定し、1セグメント = 1ファイルの CSV で保存する。
+_load_gb_def       # ガードバンドの定義 CSV を読み込む（起動時に1回）。
 
-    ※ pandas/numpyは使用しない（TriEdgeのexeレイヤー軽量化方針に合わせ、標準ライブラリのみで実装）
-
-ガードバンド定義CSV（gb_def_csv）のフォーマット
-    元の _gb_mt_learn_diag.py の gen_wave_gb() が出力するCSVをそのまま使用する想定。
-    必須列: seg_index列（デフォルト列名 "seg_index"）、
-            下限列（{gb_col_name}_GB_Lw）、上限列（{gb_col_name}_GB_Up）
-
-接続設定
-    save_dir              : CSV 保存先ディレクトリ（system_root からの相対パス、デフォルト: "output"）
-    encode                 : CSV ファイルの文字エンコーディング（デフォルト: "utf-8"）
-    file_pfx               : 判定結果CSVのファイル名プレフィックス（デフォルト: "gbdiag"）
-    ack_ext                : ACK ファイル拡張子（空文字列の場合は作成しない、デフォルト: ""）
-    device_key_to_add      : 端末情報から付与するキーのリスト（デフォルト: []）
-
-    model_select_col_idx   : モデル選択に使う列のインデックス（必須。品番・設備状態等が入る列）
-    models                 : モデル定義の辞書（必須。1つ以上）
-                              {"モデルキー（品番等の文字列）": {
-                                  "target_col_idx": ...,
-                                  "gb_def_csv": ...,
-                                  "gb_col_name": ...,
-                                  "gb_seg_index_col": ...（省略可、デフォルト"seg_index"）
-                              }, ...}
-                              各モデルの内容は、従来の target_col_idx/gb_def_csv/gb_col_name/
-                              gb_seg_index_col と同じ意味
-    default_model          : model_select_col_idx の値がどのモデルにも一致しない場合に
-                              フォールバックするモデルキー（省略可）。
-                              省略時、該当モデルが無いセグメントは判定をスキップする（警告ログ出力）
-
-    save_normal_wave    : 正常波形の生データ（全行）を別途CSV保存するか（デフォルト: false）
-    save_anomaly_wave   : 異常波形の生データ（全行）を別途CSV保存するか（デフォルト: false）
-    normal_wave_file_pfx  : 正常波形CSVのファイル名プレフィックス（デフォルト: "gbdiag_wave_normal"）
-    anomaly_wave_file_pfx : 異常波形CSVのファイル名プレフィックス（デフォルト: "gbdiag_wave_anomaly"）
+位置づけ: 学習（ガードバンドの作成）は Stored 領域で行い、このモジュールは判定だけを受け持つ。判定結果を画像で見るデモ版は tri_s12_act_diag_gb_viz。
+設計意図: 品番・設備状態などの値でモデル（ガードバンド）を切り替え、1台のエッジで複数の品種を判定できるようにする。ガードバンドの定義は起動時に読み込み、セグメントごとにファイルを読まない。pandas / numpy を使わず標準ライブラリだけで実装し、exe を軽く保つ。
+前提・制約: 該当するモデルが無く、default_model も無いセグメントは判定しない（警告ログを出す）。
 """
 MODULE_NAME = "ACT_GB_Diag"
 
@@ -249,6 +205,12 @@ def a_gb_diag_trigger(
     """
     波形データを事前学習済みガードバンドと比較し、異常判定して1セグメント=1CSVファイルへ保存
     Mod: 2026.07.16    By: IWATA,Y.
+
+    [動作の要点]（旧モジュール Docstring から移動）
+        セグメント内の各行（位置 = seg_index）について、target_col_idx の値をガードバンドの上限・下限と比べ、1点でも外れれば異常波形とする
+        判定結果 CSV（1セグメント = ヘッダ + 1行）: seg_id・異常波形フラグ・異常点数・異常点のインデックス一覧・使用モデル名
+            ※ 異常点の実測値は JSON 出力にのみ含む
+        save_normal_wave / save_anomaly_wave が有効な場合、判定結果に応じて波形の生データ（全行）も別に CSV で保存する（tri_s12_act_csv と同じ5行ヘッダー）
     """
     TRIGGER_NAME = "a_gb_diag_trigger"
     func_name = sys._getframe().f_code.co_name
@@ -280,9 +242,7 @@ def a_gb_diag_trigger(
         model_select_col_idx = config.get("model_select_col_idx")
         if model_select_col_idx is None:
             raise ValueError("model_select_col_idx is required")
-        model_select_col_idx = int(model_select_col_idx)
-        if not (0 <= model_select_col_idx < n_col_def):
-            raise ValueError(f"model_select_col_idx={model_select_col_idx} out of range (0-{n_col_def-1})")
+        model_select_col_idx = base.resolve_act_col(model_select_col_idx, col_def, "model_select_col_idx")  # Find と同じ列番号
 
         models_cfg = config.get("models")
         if not models_cfg:
@@ -315,9 +275,7 @@ def a_gb_diag_trigger(
             _target_col_idx = model_cfg.get("target_col_idx")
             if _target_col_idx is None:
                 raise ValueError(f"models[{model_key!r}].target_col_idx is required")
-            _target_col_idx = int(_target_col_idx)
-            if not (0 <= _target_col_idx < n_col_def):
-                raise ValueError(f"models[{model_key!r}].target_col_idx={_target_col_idx} out of range (0-{n_col_def-1})")
+            _target_col_idx = base.resolve_act_col(_target_col_idx, col_def, f"models[{model_key!r}].target_col_idx")  # Find と同じ列番号
 
             """ガードバンド定義CSVの読込み（標準csvモジュールのみ。pandas不使用）"""
             _gb_def_csv = model_cfg.get("gb_def_csv")

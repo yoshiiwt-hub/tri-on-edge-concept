@@ -1,8 +1,8 @@
 # Tri-On-Edge Waveform Statistics Calculation and Configuration Guide
 
-- Ver: 01.d.20261006
+- Ver: 01.f.20261025
 - By: IWATA, Y.'s Agent AI
-- Mod: Synced with the Japanese edition 01.e. Added a note that Find's type-cast defaults (e.g., -9999.9) are aggregated as valid values, and recommended setting them to null
+- Mod: Synced with the Japanese edition 01.g. Added how the times of seg_id / seg_ts / seg_ts_start / seg_ts_end are determined (the acquisition time from Find, or the time Stream Core received the record if Find does not pass one)
 
 ---
 
@@ -67,7 +67,7 @@ Parent Document
 
 | index | key | content |
 |----|------|------|
-| 0 | `seg_id` | Segment ID (a unique value based on the occurrence time) |
+| 0 | `seg_id` | Segment ID (a unique value based on the time of the start record; always greater than the previous segment's) |
 | 1 | `seg_ts_start` | Start timestamp of the waveform |
 | 2 | `seg_ts_end` | End timestamp of the waveform (the time of the **last data row**, not of the end row where the end condition held) |
 | 3 | `seg_rows` | Number of rows in the waveform (excluding the end row) |
@@ -75,6 +75,12 @@ Parent Document
 Note: Act Triggers that calculate statistics have `CUT_LAST_ROW = True`, so they calculate from the segment from which Stream Core has excluded the end row
 (see "6. Handling of the End Row" in the Waveform Cut-Out guide). `seg_ts_end - seg_ts_start` is the time difference between the first and last data rows
 (one sampling period shorter than the length up to the time the end condition held).
+
+Note: `seg_ts` of each row (= `seg_ts_start` / `seg_ts_end`) and `seg_id` are made from the time of the record (truncated by `monitor.timestamp_round_ms`).
+The time of a record is the acquisition time if Find puts `(count, value, acquisition_time)` into the queue, or the time Stream Core received it if Find puts `(count, value)`.
+Currently only `tri_s11_find_socket` passes the acquisition time (the time it received the response from the server); for the other Finds it is the time Stream Core received the record
+(including the time spent waiting in the queue between Find and Stream Core). The `seg_max_sec` check (segment length limit) uses the same time.
+`seg_id` is never duplicated: if the next segment starts within the same 10 ms, or the time goes backward, it becomes the previous value + 1.
 
 ---
 
@@ -184,7 +190,9 @@ Written in the `act_trigger` section of `trigger_setting_02.json`.
 "index": [src_col_idx, "stat_name", [start, end], param]   ← both
 ```
 
-- `src_col_idx`: the column index of the input data (corresponds to the index in `col_def`)
+- `src_col_idx`: the column index of the input data. Write it **with the same column index as Find (`column` in `trigger_setting_01.json`)** (0-based)
+  - Each row passed to an Act starts with four fixed columns (`seg_id` / `seg_ind` / `seg_ts` / `seg_status`), but you do not need to add 4 to the index
+  - To use one of the four fixed columns, write its name: `"seg_id"` / `"seg_ind"` / `"seg_ts"` / `"seg_status"` (e.g. `["seg_ts", "first"]`)
 - `stat_name`: the name of the statistic (see Section 3)
 - When using `seg_len`, set `src_col_idx = -1` (a sentinel value, since no column is needed)
 
@@ -205,6 +213,8 @@ Written in the `act_trigger` section of `trigger_setting_02.json`.
 
 ## 6. Configuration Examples
 
+The examples below assume that Find's `column` is `0:Timestamp, 1:LOT, 2:Sin, 3:Cos, 4:Tan, 5:CL`.
+
 ### Pattern A: Basic Statistics
 
 Scenario: "Calculate the main statistics over the entire range."
@@ -212,14 +222,14 @@ Scenario: "Calculate the main statistics over the entire range."
 ```json
 "column_register_map": {
     "0":  [-1, "seg_len"],
-    "1":  [6,  "mean"],
-    "2":  [6,  "med"],
-    "3":  [6,  "min"],
-    "4":  [6,  "max"],
-    "5":  [6,  "range"],
-    "6":  [6,  "std"],
-    "7":  [6,  "count"],
-    "8":  [6,  "n_null"]
+    "1":  [2,  "mean"],
+    "2":  [2,  "med"],
+    "3":  [2,  "min"],
+    "4":  [2,  "max"],
+    "5":  [2,  "range"],
+    "6":  [2,  "std"],
+    "7":  [2,  "count"],
+    "8":  [2,  "n_null"]
 },
 "out_coldef": {
     "0":  ["Seg_Len",   "int",   "numetory", "explanatory", "区間長"],
@@ -240,12 +250,12 @@ Scenario: "Understand the shape of the distribution and detect outliers using pe
 
 ```json
 "column_register_map": {
-    "0":  [6,  "pertl", 25],
-    "1":  [6,  "med"],
-    "2":  [6,  "pertl", 75],
-    "3":  [6,  "iqr"],
-    "4":  [6,  "sig_u",  3],
-    "5":  [6,  "sig_l",  3]
+    "0":  [2,  "pertl", 25],
+    "1":  [2,  "med"],
+    "2":  [2,  "pertl", 75],
+    "3":  [2,  "iqr"],
+    "4":  [2,  "sig_u",  3],
+    "5":  [2,  "sig_l",  3]
 },
 "out_coldef": {
     "0":  ["Sin_P25",   "float", "numetory", "explanatory", "第１四分位"],
@@ -263,11 +273,11 @@ Scenario: "Compare the first 30% (rise) of the waveform with the last 50% (stead
 
 ```json
 "column_register_map": {
-    "0":  [6,  "mean", [0.0, 0.3]],
-    "1":  [6,  "std",  [0.0, 0.3]],
-    "2":  [6,  "mean", [0.5, 1.0]],
-    "3":  [6,  "std",  [0.5, 1.0]],
-    "4":  [6,  "nth",  [0.5, 1.0], 1]
+    "0":  [2,  "mean", [0.0, 0.3]],
+    "1":  [2,  "std",  [0.0, 0.3]],
+    "2":  [2,  "mean", [0.5, 1.0]],
+    "3":  [2,  "std",  [0.5, 1.0]],
+    "4":  [2,  "nth",  [0.5, 1.0], 1]
 },
 "out_coldef": {
     "0":  ["Sin_mean_rise",    "float", "numetory", "explanatory", "平均値＿立上り30%"],
@@ -284,11 +294,11 @@ Scenario: "Aggregate the LOT number and class label."
 
 ```json
 "column_register_map": {
-    "0":  [5,  "nth",  1],
-    "1":  [5,  "nth", -1],
-    "2":  [5,  "mode"],
-    "3":  [8,  "mode"],
-    "4":  [8,  "mean"]
+    "0":  [1,  "nth",  1],
+    "1":  [1,  "nth", -1],
+    "2":  [1,  "mode"],
+    "3":  [5,  "mode"],
+    "4":  [5,  "mean"]
 },
 "out_coldef": {
     "0":  ["LOT_first", "str",   "key",      "key",         "LOT＿先頭行"],
@@ -308,7 +318,7 @@ Scenario: "Aggregate the LOT number and class label."
 | Situation | Behavior |
 |------|------|
 | Keys of `column_register_map` and `out_coldef` do not match | Startup halted (ValueError) |
-| `src_col_idx` is out of range | Startup halted (ValueError) |
+| `src_col_idx` is out of range or an invalid name | Startup halted (ValueError) |
 | Unknown `stat_name` / invalid `params` | Startup halted (ValueError) |
 | Zero valid values (e.g., all rows are null) | `{output key}_WARN: "no_valid_values"` |
 | Slice result is empty | `{output key}_WARN: "slice_empty"` |

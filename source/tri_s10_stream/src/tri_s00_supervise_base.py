@@ -4,39 +4,23 @@
 """
 ########################################
 # Supervise Base Module
-# Ver: 03.g.20261007    By: IWATA, Y.'s Agent AI
-# Mod: read_json_safely で JSON の書式誤りを文字コード不一致と区別し、行・列・該当行・ファイルパスを表示する
+# Ver: 03.j.20261103    By: IWATA, Y.'s Agent AI
+# Mod: ログファイルの書き出しを BOM 無しの UTF-8 に変更（C-11）
 ########################################
-get_system_root           # システムルートディレクトリのパスを返す
-cleanup_old_logs          # ログディレクトリ内の古いログファイル（更新日時が keep_days より前）を削除する
-get_log_path              # ログファイルのパスを返す
-get_log_dir               # ログディレクトリのパスを返す
-get_work_dir              # 作業ディレクトリのパスを返す
-get_work_sub_dirs         # 作業サブディレクトリ（db / run / spool）のパス辞書を返す
-get_absolute_path         # 相対パスをシステムルートを基点とした絶対パスに変換する
-get_stream_hb_path        # ストリームハートビートファイルのパスを返す
-get_ctrl_stop_stream_path # ストリーム停止制御ファイルのパスを返す
-get_mode_is_offline       # オフラインモード制御ファイルの存在を確認する
-output_log                # タイムスタンプ付きでログを標準出力・ファイル・ロガーに出力する
-load_device_info          # device_info.json を読み込んで辞書で返す
-load_operator_setting     # 01_operator.json を読み込んで辞書で返す
-load_trigger_setting_01   # trigger_setting_01.json を読み込んで辞書で返す
-load_trigger_setting_02   # trigger_setting_02.json を読み込んで辞書で返す
-set_cast_dtype            # col_def からキャストプランを生成する
-cast_dtype                # キャストプランに従い値リストを型変換する
-metrics_add                # 運用系メトリクスを加算する（トリガー側から呼ぶ。波形の統計量=statsとは別概念）
-metrics_set_last           # 運用系メトリクスを上書きする（直近エラー等、最新値を残したい場合）
-metrics_get_all            # 全モジュール分の運用系メトリクスのスナップショットを返す（Operator用accesser）
-metrics_notify             # 運用系メトリクスのオンデマンド通知を要求する（トリガー・StreamCore側から呼ぶ）
-notify_pop_all             # オンデマンド通知要求をすべて取り出す（Operator用accesser）
-notify_wait                # オンデマンド通知要求が入るまで待つ（Operator用accesser）
+全モジュールが共通で使う、パス・設定・ログ・状態の置き場となる基盤
 
-動作概要
-    1. システムルート・ログ・作業ディレクトリのパスを一元管理する基盤モジュール
-    2. .py 実行時は src/ の親ディレクトリ、.exe 実行時は exe の配置ディレクトリをルートとして設定
-    3. output_log でタイムスタンプ・モジュール名を付与してログを出力（コンソール / ファイル / ロガー選択可）
-    4. set_cast_dtype / cast_dtype で col_def に基づく型変換（int / float / str / time）を提供
-    5. オフライン・デバッグ・停止の制御ファイルを work/run/ で管理
+主要関数:
+_set_root_dir                              # システムルートと、配下のフォルダ・ファイルのパスを決める（import 時に実行）。
+output_log                                 # タイムスタンプとモジュール名を付けてログを出力する。
+load_trigger_setting_01 / 02               # トリガー設定ファイルを読み込む（"##" のコメントは除く）。
+set_cast_dtype / cast_dtype                # col_def に従って値を型変換する。
+resolve_act_col / resolve_act_cols         # Act の設定に書いた列番号を、Act に渡る行の中の位置に変換する。
+metrics_* / notify_*                       # 運用系メトリクスと通知要求を、トリガーから Operator へ受け渡す。
+stq_*                                      # Storage Queue（SQLite）への登録・取得・状態更新を行う。
+
+位置づけ: 他のすべてのモジュールが最初に import する。パスの決定と設定の読込みをここに集め、各モジュールが個別に解決しないようにする。
+設計意図: システムルートは実行ファイル（.exe）またはソースの配置場所から決め、起動したフォルダに左右されないようにする。メトリクス・通知要求・モードの受け渡しはこのモジュールを介し、トリガーと Operator が互いを import しないようにする。
+前提・制約: import した時点で、パスの決定と .env の読込みが行われる。オフライン・デバッグのモードは Operator だけが更新する。
 """
 MODULE_NAME = "BASE"
 
@@ -159,7 +143,7 @@ def _set_root_dir() -> None:
         # 緊急退避
         target_log = "base_set_root_dir.log"
         try:
-            with open(target_log, "a", encoding="utf-8-sig") as f:
+            with open(target_log, "a", encoding="utf-8") as f:
                 f.write(msg + "\n")
         except Exception: pass
         sys.exit(1)
@@ -206,7 +190,7 @@ def _get_logger(log_file: str = "") -> logging.Logger:
                     log_file, 
                     maxBytes=1024*1024*1, # 1MB
                     backupCount=5,        # 5 generations
-                    encoding='utf-8-sig'
+                    encoding='utf-8'
                 )
                 fh.setFormatter(formatter)
                 logger.addHandler(fh)
@@ -248,7 +232,7 @@ def output_log(tag: str, msg: str, log_file: str = "") -> None:
             log_file = _CURRENT_LOG_PATH
         
         try:
-            with open(log_file, "a", encoding="utf-8-sig") as f:
+            with open(log_file, "a", encoding="utf-8") as f:
                 f.write(msg + "\n")
         except Exception:
             pass
@@ -688,6 +672,64 @@ def load_env_if_exists() -> list:
 _ret = load_env_if_exists()
 if _ret:
     output_log(MODULE_NAME, f"Env File Detected, Loaded to os.environ {_ret}", _CURRENT_LOG_PATH)
+
+
+########################################
+# Segment Column Functions
+########################################
+
+"""
+Act に渡る行の並び: [seg_id, seg_ind, seg_ts, seg_status] + Find の列（col_def の並び）
+Act の設定で列を指定するときは、Find と同じ列番号（0 始まり）で書き、先頭の固定4列は名前で書く。
+行の中の位置への変換（Find の列番号 + 4）は resolve_act_col が行う（各 Act は起動時に1回変換する）
+"""
+SEG_HEADER_COLS: Tuple[str, ...] = ("seg_id", "seg_ind", "seg_ts", "seg_status")
+
+
+def resolve_act_col(value: Any, col_def: Union[Dict[int, Any], Sequence[Any]], key: str = "") -> int:
+    """
+    Act の設定に書いた列の指定を、Act に渡る行の中の位置（0 始まり）に変換する（起動時に呼ぶ）
+      整数、または数字の文字列（例 5 / "5"） : Find の列番号とみなし、+ len(SEG_HEADER_COLS) した位置を返す
+      "seg_id" / "seg_ind" / "seg_ts" / "seg_status" : 先頭の固定4列の位置（0～3）を返す
+    col_def: Act に渡される col_def（固定4列 + Find の列）、またはその列名のリスト。Find の列数は len(col_def) - 4 で求める
+    key    : エラーメッセージに出す設定キー名
+    範囲外・true/false・小数・それ以外の文字列は ValueError（起動時に止める）
+    Mod: 2026.10.21    By: IWATA, Y.'s Agent AI
+    """
+    n_head = len(SEG_HEADER_COLS)
+    n_find = len(col_def) - n_head
+    _key = f"config[{key!r}]" if key else "column"
+
+    if isinstance(value, str):
+        v = value.strip()
+        if v in SEG_HEADER_COLS:
+            return SEG_HEADER_COLS.index(v)
+        if v.isdigit():
+            value = int(v)
+        else:
+            raise ValueError(
+                f"{_key}={value!r} is invalid. Use Find column index (0-{n_find - 1}) "
+                f"or one of {list(SEG_HEADER_COLS)}")
+
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(
+            f"{_key}={value!r} is invalid. Use Find column index (0-{n_find - 1}) "
+            f"or one of {list(SEG_HEADER_COLS)}")
+    if not (0 <= value < n_find):
+        raise ValueError(f"{_key}={value} (Find column index) out of range (0-{n_find - 1})")
+    return value + n_head
+
+
+def resolve_act_cols(values: Any, col_def: Union[Dict[int, Any], Sequence[Any]], key: str = "") -> List[int]:
+    """
+    resolve_act_col のリスト版。単一の値（リストでない）は1要素のリストとして扱う
+    Mod: 2026.10.21    By: IWATA, Y.'s Agent AI
+    """
+    if values is None:
+        return []
+    if not isinstance(values, (list, tuple)):
+        values = [values]
+    return [resolve_act_col(v, col_def, key) for v in values]
 
 
 ########################################

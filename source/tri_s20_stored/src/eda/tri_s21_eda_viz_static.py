@@ -4,35 +4,18 @@
 """
 ########################################
 # EDA Visualizer
-# Ver: 01.b.20260930    By: IWATA, Y.'s Agent AI
-# Mod: 新規作成
+# Ver: 01.c.20261102    By: IWATA, Y.'s Agent AI
+# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
 ########################################
-tri_s20_eda_runner.py の visualise() ステップから呼び出される可視化モジュール。
-AnalyzeFunctionsVZ_DT.py（既存の可視化ライブラリ）の gen_viz_report() をラップし、
-col_def（tri_s20_eda_runner.py の load ステップが返す列定義辞書）から
-gen_viz_report() が必要とするパラメータ（featurename, targetname, target_is,
-IsQualittv, IsQuanttv）を自動的に組み立てる。
+データの分布・関係・相関のグラフを画像で保存し、Excel のレポートにまとめる
 
-動作概要
-    1. col_def を走査し、featurename（explanatory列）・targetname（objective列）・
-       target_is（目的変数が数値/カテゴリのどちらか）・IsQualittv（category列）・
-       IsQuanttv（numetory列）を組み立てる
-    2. AnalyzeFunctionsVZ_DT.gen_viz_report() を呼び出す
-       - グラフ画像（箱ひげ図・ヒストグラム・散布図・折れ線・ヒートマップ等）を
-         OUTPUT フォルダへ PNG として保存
-       - 画像を埋め込んだ Excel レポート（{TITLE}_img.xlsx）を同フォルダへ保存
-       （画像保存・Excel生成とも gen_viz_report() 内部の処理そのままで、本モジュールは
-        呼び出しパラメータの組み立てのみを担当する）
+主要関数:
+main            # グラフの画像と Excel のレポートを作る（tri_s20_eda_runner の visualise から呼ばれる）。
+_parse_col_def  # col_def から、説明変数・目的変数・質的変数・量的変数の列名を組み立てる。
 
-col_def フォーマット（tri_s20_eda_runner.py の load ステップと共通）
-    {"列インデックス(str)": [name, dtype, role, var_type, comment], ...}
-      role    : "key" | "numetory" | "category"
-      var_type: "key" | "explanatory" | "objective"
-
-前提
-    AnalyzeFunctionsVZ_DT.py と、それが依存する AnalyzeFunctionsPP.py が
-    Pythonパスの通った場所に存在していること（gen_viz_report() 内部で
-    'AnalyzeFunctionsPP.CALC_STATS' 等が使われるため）。
+位置づけ: グラフの生成とレポートの作成そのものは tri_s29_eda_vz_dt（旧 AnalyzeFunctionsVZ_DT）が受け持ち、このモジュールは col_def から引数を組み立てて呼び出す。対話的に確かめる場合は tri_s21_eda_viz_interact を使う。
+設計意図: col_def の role / var_type から引数を自動で組み立て、データセットごとにグラフの設定を書かなくて済むようにする。画像を Excel に埋め込み、ファイル1つで共有できるようにする。
+前提・制約: col_def の role は key / numetory / category、var_type は key / explanatory / objective。量的変数に欠損がある行は除いて描く。
 """
 MODULE_NAME = "Eda_Visualizer"
 

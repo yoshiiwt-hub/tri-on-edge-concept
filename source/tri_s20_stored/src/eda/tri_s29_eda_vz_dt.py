@@ -23,6 +23,23 @@
 #    tar_ is None の場合は「目的変数(objective)が未設定なため、この処理は実行できなかった
 #    可能性があります」というヒントをメッセージに追加するようにした。
 ################################################################
+"""
+########################################
+# EDA Visualization Library [Static]（旧 AnalyzeFunctionsVZ_DT）
+# Ver: 01.a.20261102    By: IWATA, Y.'s Agent AI
+# Mod: 規約の形の Docstring を追加
+########################################
+分布・関係・相関などのグラフを画像で作り、Excel のレポートにまとめる可視化の本体
+
+主要関数:
+gen_viz_report  # 説明変数・目的変数の組み合わせに応じたグラフをまとめて作り、Excel に埋め込む。
+visualiseData   # 種類（箱ひげ・ヒストグラム・散布図・折れ線・ヒートマップ等）を指定して、グラフを1つ描く。
+image_to_excel  # 画像を Excel のシートに埋め込む。
+
+位置づけ: tri_s21_eda_viz_static から呼ばれる。既存の可視化ライブラリ（AnalyzeFunctionsVZ_DT）を Stored 領域に取り込んだもの。
+設計意図: 1つのグラフの生成に失敗しても、残りのグラフと Excel の出力は続ける（_safe で保護）。
+前提・制約: 取り込み時に見つけた不具合の修正内容は、冒頭の FIX NOTE を参照。
+"""
 #################### IMPORT LIBRARY ##########
 ##im##port collections   #カウント
 ##from   contextlib im##port redirect_stdout

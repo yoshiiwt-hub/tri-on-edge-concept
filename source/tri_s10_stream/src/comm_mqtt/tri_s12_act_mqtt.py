@@ -4,67 +4,19 @@
 """
 ########################################
 # Act Trigger Module [MQTT Publish]
-# Ver: 02.b.20261005    By: IWATA, Y.'s Agent AI
-# Mod: 統計まわりを init_stats / calc_stats / export_out_coldef に集約（出力内容は従来どおり。B-9）。初回接続の失敗を ErrorIF へ報告（phase=startup / category=comm。A-21）
+# Ver: 02.c.20261102    By: IWATA, Y.'s Agent AI
+# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
 ########################################
-a_mqtt_pub_seg_trigger    # セグメントの全行を JSON 形式で MQTT トピックへ Publish する
-a_mqtt_pub_stats_trigger  # セグメントの統計量を算出し、1件を JSON 形式で MQTT トピックへ Publish する
+セグメントの値や統計量を、MQTT のトピックへ送り出す出口
 
-動作概要
-    1. broker_mode="embedded" の場合は tri_s19_mqtt.start_embedded_broker で
-       amqtt ブローカーをバックグラウンドスレッドで自動起動する
-    2. tri_s19_mqtt.build_mqtt_client で paho-mqtt クライアントを生成・接続する
-    3. post_queue からセグメントを受信し、項目数の整合性を確認する
-    4. a_mqtt_pub_seg_trigger   : セグメントの全行を1行ずつ JSON 形式で逐次 Publish する
-       a_mqtt_pub_stats_trigger : build_stats() で統計量を算出して 1 レコードを Publish する
-    5. 接続断時は is_online=False に移行し reconnect_interval_sec 秒ごとに再接続を試みる
-    6. skip_on_offline=True の場合はオフライン中のセグメントをスキップしてキューを消費する
-    7. stop_event またはキュー Sentinel で終了し、クライアントをクリーンアップする
+主要関数:
+a_mqtt_pub_seg_trigger    # セグメントの全行を JSON にして Publish する。
+a_mqtt_pub_stats_trigger  # セグメントの統計量を求め、1件の JSON にして Publish する。
+_run_pub_trigger          # 2つの trigger の共通ループ（送る内容だけが異なる）。
 
-接続設定（共通）
-    broker_mode            : "external"（外部ブローカー）or "embedded"（組込みブローカー）
-                             デフォルト: "external"
-    broker_host            : 接続先ブローカーホスト（broker_mode="external" 時。デフォルト: "127.0.0.1"）
-    broker_port            : MQTT ブローカーポート（デフォルト: 1883）
-    client_id              : クライアントID（省略時は自動生成）
-    username               : 認証ユーザー名（省略可）
-    password               : 認証パスワード（省略可）
-    keepalive              : キープアライブ秒（デフォルト: 60）
-    reconnect_interval_sec : 再接続インターバル秒（デフォルト: 10.0）
-    skip_on_offline        : オフライン時にセグメントをスキップするか（デフォルト: true）
-    tls_enable             : TLS 接続を有効にするか（デフォルト: false）
-    tls_ca_cert            : TLS CA 証明書パス（システムルート相対）
-    tls_certfile           : TLS クライアント証明書パス（システムルート相対。省略可）
-    tls_keyfile            : TLS クライアント秘密鍵パス（システムルート相対。省略可）
-    tls_insecure           : サーバ証明書のホスト検証を無効化（デフォルト: false）
-
-組込みブローカー設定（broker_mode="embedded"）
-    broker_port              : 組込みブローカーの待ち受けポート（デフォルト: 1883）
-    embedded_allow_anonymous : 匿名接続を許可するか（デフォルト: true）
-
-Publish 設定（共通）
-    publish_topic  : 送信先 MQTT トピック（必須）
-    qos            : QoS レベル（0/1/2, デフォルト: 0）
-    retain         : retain フラグ（デフォルト: false）
-    encode         : JSON エンコーディング（デフォルト: "utf-8"）
-    publish_mode   : a_mqtt_pub_seg_trigger（mode="seg"）専用。デフォルト: "row"
-                       "row"    : セグメントの各行を1メッセージずつPublishする（従来通り）
-                       "segment": セグメント全体を1メッセージ（JSON配列）にまとめてPublishする
-                                  {"seg_id":..., "row_count":..., "rows":[{...},{...},...]}
-                                  公開ブローカー等、大量の短時間連続Publishでメッセージが
-                                  欠落しやすい環境では、こちらの方が安全（メッセージ数が
-                                  1/セグメント行数に減るため）
-    marker_row_enable: publish_mode="segment" 専用。デフォルト: true
-                     rows配列の末尾に「全列"____"」の終端マーカー行を1件追加する。
-                     受信側（find_mqtt.py の payload_format="json_rows"）は特別な処理をしなくても、
-                     他の行と同じように展開されるだけで、即座にセグメント終了を検出できるように
-                     なる（find_mqtt.py側の変更は不要）。falseにすると、次のセグメントの
-                     先頭行が届くまで終点を検出できなくなる
-
-a_mqtt_pub_stats_trigger 専用設定
-    column_register_map : 統計量算出用の列マッピング定義（必須）
-    out_coldef          : 統計量の出力列定義（必須）
-    save_dir            : out_coldef を保存するディレクトリ（デフォルト: "output"）
+位置づけ: 生データを送る場合は seg、統計量だけを送る場合は stats を使う。通信の部品は tri_s19_mqtt、統計量の算出は tri_s10_stream_wave_stat を使う。受け側は tri_s11_find_mqtt で受け取れる。
+設計意図: セグメント全体を1メッセージにまとめて送る形（publish_mode="segment"）を用意し、短時間に大量の Publish をするとメッセージが欠落しやすいブローカーでも安全に送れるようにする。まとめて送る場合は終端の行を付け、受け側がすぐにセグメントの終わりを判定できるようにする。
+前提・制約: 外部のブローカーが無い場合は、組込みブローカーを起動して使える。
 """
 MODULE_NAME = "ACT_MQTT"
 

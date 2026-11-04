@@ -4,62 +4,17 @@
 """
 ########################################
 # Act Trigger Module [SPC Diagnosis]
-# Ver: 02.b.20261005    By: IWATA, Y.'s Agent AI
-# Mod: 端末情報の抽出を tri_s19_util.get_device_info_to_add に集約（B-9）
+# Ver: 02.d.20261102    By: IWATA, Y.'s Agent AI
+# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
 ########################################
-a_spc_diag_trigger  # セグメント内の値列に対してSPCルール（連続トレンド・ゾーン逸脱等）を判定するAct Trigger
+セグメント内の値の並びを SPC のルールで判定し、工程の異常な傾向を見つける
 
-動作概要
-    1. 起動時に models（複数モデルの定義）を全て検証・コンパイルする
-       （モデルごとに target_col_idx・offset・center・sigma・spc_rules を事前に検証・コンパイルしておく）
-    2. ループ内でキューからセグメントを受信し項目数の整合性を確認する
-    3. セグメントの終点行（変化後）を除外してから判定する
-    4. model_select_col_idx の値で使用するモデルを選択する
-       （該当モデルが無ければ default_model にフォールバック。それも無ければ判定をスキップする）
-    5. 選択したモデルの target_col_idx の値列（セグメント内、1点=1行）に対して、
-       そのモデルのコンパイル済み全ルールを適用する
-    6. いずれかのルールに1点でも違反があれば、そのセグメントを異常と判定する
-    7. 1セグメントにつき、ヘッダ+1行のCSVファイルを1つ保存する
-       （seg_id・異常判定・使用モデル名・ルールごとの違反点数・違反インデックス一覧・違反点の実測値一覧を含む）
-       正常/異常で異なるファイル名プレフィックス（normal_file_pfx / anomaly_file_pfx）を使う
-    8. device_key_to_add が指定されている場合は端末情報を行に付与して出力する
-    9. ack_ext が指定されている場合は CSV 保存後に ACK ファイル（.done 等）を作成する
-    10. stop_event が立ちキューが空になった時点でループを終了する
+主要関数:
+a_spc_diag_trigger  # 値の並びに SPC のルール（連続した上昇・下降、管理限界の外れ等）を適用し、結果を CSV で保存する。
 
-    ※ pandas/numpyは使用しない（TriEdgeのexeレイヤー軽量化方針に合わせ、標準ライブラリのみで実装）
-    ※ center/sigma は本トリガーでは固定値のみ対応（学習して自動算出する機能は別途対応予定）
-
-spc_rules フォーマット（リスト。各要素が1つのルール。tri_s19_calc_spc.py 参照）
-    {"method": "trend", "n": 6, "direction": "up", "label": "trend_up6"}
-        n           : 連続点数（2以上）
-        direction   : "up"（上昇のみ）| "down"（下降のみ）| "both"（両方、デフォルト）
-    {"method": "zone_out", "m": 3, "n_out": 2, "sigma_level": 2, "label": "zone2of3_2sigma"}
-        m           : 判定に使うウィンドウの点数
-        n_out       : mのうち、閾値超えとみなす最小点数（同じ側のみでカウント）
-        sigma_level : 閾値＝center ± sigma_level*sigma
-    "label" キー（省略可）: 結果の識別名。省略時は "{method}_{リスト内のindex}"
-
-接続設定
-    save_dir              : CSV 保存先ディレクトリ（system_root からの相対パス、デフォルト: "output"）
-    encode                 : CSV ファイルの文字エンコーディング（デフォルト: "utf-8"）
-    normal_file_pfx        : 正常判定時のCSVファイル名プレフィックス（デフォルト: "spcdiag_normal"）
-    anomaly_file_pfx       : 異常判定時のCSVファイル名プレフィックス（デフォルト: "spcdiag_anomaly"）
-    ack_ext                : ACK ファイル拡張子（空文字列の場合は作成しない、デフォルト: ""）
-    device_key_to_add      : 端末情報から付与するキーのリスト（デフォルト: []）
-    filename_tokens         : ファイル名を組み立てるトークンのリスト（省略可。tri_edge_12_act_save_csv.py 参照）
-
-    model_select_col_idx   : モデル選択に使う列のインデックス（必須。品番・設備状態等が入る列）
-    models                  : モデル定義の辞書（必須。1つ以上）
-                               {"モデルキー（品番等の文字列）": {
-                                   "target_col_idx": ...,
-                                   "offset": [前方offset点数, 後方offset点数]（省略可、デフォルト[0,0]）,
-                                   "center": ...,
-                                   "sigma": ...,
-                                   "spc_rules": [...]
-                               }, ...}
-    default_model           : model_select_col_idx の値がどのモデルにも一致しない場合に
-                               フォールバックするモデルキー（省略可）。
-                               省略時、該当モデルが無いセグメントは判定をスキップする（警告ログ出力）
+位置づけ: ルールの判定は tri_s19_calc_spc を使う。品番などの値でモデル（中心値・標準偏差・ルール）を切り替える。
+設計意図: ルールはモデルごとに起動時に検証・コンパイルし、セグメントごとの処理を軽くする。pandas / numpy を使わず標準ライブラリだけで実装し、exe を軽く保つ。
+前提・制約: 中心値（center）と標準偏差（sigma）は固定値のみ（学習による自動算出は別途対応予定）。
 """
 MODULE_NAME = "ACT_SPC_Diag"
 
@@ -206,6 +161,11 @@ def a_spc_diag_trigger(
     """
     セグメント内の値列に対してSPCルール（連続トレンド・ゾーン逸脱等）を判定し、1セグメント=1CSVファイルへ保存
     Mod: 2026.07.18    By: IWATA,Y.
+
+    [動作の要点]（旧モジュール Docstring から移動）
+        いずれかのルールに1点でも違反があれば、そのセグメントを異常とする
+        判定結果 CSV（1セグメント = ヘッダ + 1行。正常 / 異常でファイル名の接頭語を変える）:
+            seg_id・異常判定・使用モデル名・ルールごとの違反点数・違反点のインデックス一覧・違反点の実測値一覧
     """
     TRIGGER_NAME = "a_spc_diag_trigger"
     func_name = sys._getframe().f_code.co_name
@@ -237,9 +197,7 @@ def a_spc_diag_trigger(
         model_select_col_idx = config.get("model_select_col_idx")
         if model_select_col_idx is None:
             raise ValueError("model_select_col_idx is required")
-        model_select_col_idx = int(model_select_col_idx)
-        if not (0 <= model_select_col_idx < n_col_def):
-            raise ValueError(f"model_select_col_idx={model_select_col_idx} out of range (0-{n_col_def-1})")
+        model_select_col_idx = base.resolve_act_col(model_select_col_idx, col_def, "model_select_col_idx")  # Find と同じ列番号
 
         models_cfg = config.get("models")
         if not models_cfg:
@@ -272,9 +230,7 @@ def a_spc_diag_trigger(
             _target_col_idx = model_cfg.get("target_col_idx")
             if _target_col_idx is None:
                 raise ValueError(f"models[{model_key!r}].target_col_idx is required")
-            _target_col_idx = int(_target_col_idx)
-            if not (0 <= _target_col_idx < n_col_def):
-                raise ValueError(f"models[{model_key!r}].target_col_idx={_target_col_idx} out of range (0-{n_col_def-1})")
+            _target_col_idx = base.resolve_act_col(_target_col_idx, col_def, f"models[{model_key!r}].target_col_idx")  # Find と同じ列番号
 
             """セグメントのoffset（判定対象範囲。モデルごとに指定可能）"""
             _offset = model_cfg.get("offset", [0, 0])

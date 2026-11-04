@@ -4,11 +4,12 @@
     , "##": "■ In-Memory Queue Trigger　　"
     , "##": "■■■■■■■■■■■■■■■■"
 
+    , "##segment_header": "表示用。先頭の固定4列は stream_core が自動で付ける。Act の設定ではこの名前で指定する"
     , "segment_header": {
-          "0": ["seg_id"    , "str" , "key", "key", "Segment ID"]
-        , "1": ["seg_ind"   , "int" , "key", "key", "Segment Row Index"]
-        , "2": ["seg_ts"    , "time", "key", "key", "Timestamp When Data Collected"]
-        , "3": ["seg_status", "int" , "key", "key", "Segment Process Status"]
+          "seg_id"    : ["seg_id"    , "int" , "key", "key", "Segment ID"]
+        , "seg_ind"   : ["seg_ind"   , "int" , "key", "key", "Segment Row Index"]
+        , "seg_ts"    : ["seg_ts"    , "time", "key", "key", "Timestamp When Data Collected"]
+        , "seg_status": ["seg_status", "int" , "key", "key", "Segment Process Status"]
     }
 
     , "act_trigger": {

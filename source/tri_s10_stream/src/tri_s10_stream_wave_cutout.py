@@ -4,26 +4,19 @@
 """
 ########################################
 # Stream Wave Cutout Module
-# Ver: 01.d.20261005    By: IWATA, Y.'s Agent AI
-# Mod: 閾値キーの読み出し箇所に残っていた #### threshold の印を削除（A-1）
+# Ver: 01.f.20261102    By: IWATA, Y.'s Agent AI
+# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
 ########################################
-init_state             # ステージの開始時刻・評価回数の状態を初期化する（監視開始前に1回呼ぶ）
-wrap_spec              # 開始・終了条件の設定（単一形式/多段形式）を内部仕様 {stages:[...]} にそろえる
-TRANS_TABLE            # 点種別の遷移表（0:非波形 1:開始点 2:中間点 3:終点）
-process_stream_record  # 1レコードごとに開始・終了を判定し、波形セグメントを切り出す
-cond_funcs             # 開始・終了判定の関数表（equal / not_equal / change / duration / duration_time / upto / downto / diff）
+受信したレコードの流れから、開始・終了の条件に従って波形（セグメント）を切り出す
 
-動作概要
-    1. tri_s10_stream_core のメインループから、受信したレコードごとに process_stream_record を呼ぶ
-    2. 開始・終了条件（直列ステージ × 並列チェック）を判定し、点種別（開始点・中間点・終点・非波形）を決める
-    3. 開始点〜終点のレコードをバッファに蓄積し、終点を検出したら on_cutout_segment（コールバック）で
-       呼び出し側へ渡す（キュー送信・STQ 登録・集計は呼び出し側の責務）
-    4. 終点＝開始点の場合は、新しいセグメントの開始点として扱う
-    5. セグメントが上限（seg_max_rows 行 / seg_max_sec 秒。先に達した方。0=無制限）に達したら、
-       その時点のバッファを強制クローズして渡し（on_cutout_segment(..., forced=True)）、非波形に戻る
-       （次のレコードから開始条件を評価し直す）
-    ※ base 以外のローカルモジュールに依存しない（tri_s10_stream_core を import しない＝循環 import なし）
-    ※ ステージ状態はモジュールのグローバル変数で持つ（1プロセス1ストリーム。クラス化は段階2 / チェックリスト B-1）
+主要関数:
+process_stream_record  # 1レコードごとに開始・終了を判定し、セグメントを切り出す。
+init_state             # 判定の状態とセグメント長の上限を初期化する（監視開始前に1回）。
+wrap_spec              # 開始・終了条件の設定を、内部の形（直列ステージ × 並列チェック）にそろえる。
+
+位置づけ: StreamCore のメインループから呼ばれ、切り出しの判定だけを受け持つ。完成したセグメントはコールバック（on_cutout_segment）で返し、送信・STQ 登録・集計は StreamCore が行う。
+設計意図: 判定に使う関数表（cond_funcs）と遷移表（TRANS_TABLE）はループの外で用意し、ループ内は整数の比較と関数の呼び出しだけにして処理を軽くする。終了条件が来なくても上限（行数・秒数）で強制的に区切り、セグメントが際限なく伸びないようにする。
+前提・制約: 判定の状態はモジュールの変数で持つため、1プロセスで1ストリームのみ扱う。base 以外のローカルモジュールは import しない（循環 import を避ける）。seg_id は直前の seg_id より必ず大きくする（A-7）。
 """
 MODULE_NAME = "WAVE_CUTOUT"
 
@@ -94,11 +87,17 @@ STAGE_COUNT: Dict[str, List[int]] = {"start": [], "end": []}
 SEG_MAX_ROWS: int   = 0
 SEG_MAX_SEC : float = 0.0
 
+# 直前に出した seg_id（重複させないため。STQ は (seg_id, seg_ind) の重複を禁止している。A-7）
+LAST_SEG_ID: int = 0
+
 def init_state(start_spec: Dict[str, Any], end_spec: Dict[str, Any],
                seg_max_rows: int = 0, seg_max_sec: float = 0.0) -> None:
     """ステージ開始時刻・評価回数カウンタを初期化。セグメント長の上限を設定
+    上限は seg_max_rows 行 / seg_max_sec 秒の先に達した方（0=無制限）。達したらその時点のバッファを
+    強制クローズして渡し（on_cutout_segment(..., forced=True)）、非波形に戻る（次のレコードから開始条件を評価し直す）
     """
-    global STAGE_TIMESTAMP, STAGE_COUNT, SEG_MAX_ROWS, SEG_MAX_SEC, SEG_START_TS
+    global STAGE_TIMESTAMP, STAGE_COUNT, SEG_MAX_ROWS, SEG_MAX_SEC, SEG_START_TS, LAST_SEG_ID
+    LAST_SEG_ID  = 0
     SEG_MAX_ROWS = int(seg_max_rows or 0)
     SEG_MAX_SEC  = float(seg_max_sec or 0)
     SEG_START_TS = None
@@ -371,6 +370,20 @@ def _round_ts(ts: dt, round_ms: int) -> dt:
         return ts
     us = (ts.microsecond // (round_ms * 1000)) * (round_ms * 1000)
     return ts.replace(microsecond=us)
+
+
+def _new_seg_id(ts: dt) -> int:
+    """
+    セグメント開始時刻から seg_id（16桁 yyyymmddhhMMss + センチ秒2桁）を作る。直前の seg_id 以下なら +1 する
+    （同じ 10ms 内に次のセグメントが始まった場合や、時刻が戻った場合も重複させない。A-7）
+    Mod: 2026.10.25    By: IWATA, Y.'s Agent AI
+    """
+    global LAST_SEG_ID
+    seg_id = int(ts.strftime("%Y%m%d%H%M%S%f")[:-4])
+    if seg_id <= LAST_SEG_ID:
+        seg_id = LAST_SEG_ID + 1
+    LAST_SEG_ID = seg_id
+    return seg_id
 def process_stream_record(
     seg_id          : int,
     seg_ind         : int,
@@ -397,10 +410,10 @@ def process_stream_record(
     Mod: 2026.10.04    By: IWATA, Y.'s Agent AI（seg_range の終了 index を終点行に合わせた。B-2）
 
     Args:
-        seg_id (int): Segment ID, 16 digits TS (yyyymmddhhMMss00) to int
+        seg_id (int): Segment ID, 16 digits TS (yyyymmddhhMMss00) to int（開始レコードの時刻から作る。必ず前より大きい）
         seg_ind (int): Segment Record Index
         record (tuple): (timestamp, index, value) 形式のデータレコード
-            - timestamp: データ発生時刻
+            - timestamp: レコードの時刻（Find の取得時刻、渡されなければ Core の受信時刻）。seg_ts・seg_id に使う
             - index (int): データのインデックス
             - value (Sequence): データ値のリスト
         segment_buffer (list): 現在検出中の波形データを蓄積するバッファ
@@ -413,7 +426,7 @@ def process_stream_record(
         cond_specs (tuple): (開始条件仕様, 終了条件仕様)
         transition (list): 状態遷移表。prev_is と判定結果から次の点種別を決定する
         cond_progress (dict): 直列ステージの成立進捗を保持する辞書
-        ts_round_ms (int): seg_ts の丸め単位（ms）。0=丸めなし
+        ts_round_ms (int): seg_ts・seg_id の丸め単位（ms）。0=丸めなし
 
     Returns:
         tuple: (prev_value, prev_is, seg_range) の更新後の値
@@ -499,8 +512,8 @@ def process_stream_record(
     
     """開始点処理"""
     if val_is == 1:
-        _ts = _round_ts(dt.now(), ts_round_ms)
-        seg_id = int(_ts.strftime("%Y%m%d%H%M%S%f")[:-4])
+        _ts = _round_ts(timestamp, ts_round_ms)  # レコードの時刻（A-7）
+        seg_id = _new_seg_id(_ts)
         seg_ts = _ts.strftime("%Y-%m-%d %H:%M:%S.%f")
         seg_ind = 1
         segment_buffer.append([seg_id, seg_ind, seg_ts, 0] + value)
@@ -515,7 +528,7 @@ def process_stream_record(
 
     """中間点処理"""
     if val_is == 2:
-        _ts = _round_ts(dt.now(), ts_round_ms)
+        _ts = _round_ts(timestamp, ts_round_ms)
         seg_ts = _ts.strftime("%Y-%m-%d %H:%M:%S.%f")
         seg_ind += 1
         segment_buffer.append([seg_id, seg_ind, seg_ts, 0] + value)
@@ -549,7 +562,7 @@ def process_stream_record(
 
     """終点処理"""
     if val_is == 3:
-        _ts = _round_ts(dt.now(), ts_round_ms)
+        _ts = _round_ts(timestamp, ts_round_ms)
         seg_ts = _ts.strftime("%Y-%m-%d %H:%M:%S.%f")
         seg_ind += 1
         segment_buffer.append([seg_id, seg_ind, seg_ts, 0] + value)
@@ -584,8 +597,8 @@ def process_stream_record(
             _seg_log(f"終点＝開始点 検出: seg_range={[index, None]}")
             val_is    = 1
             seg_range = [index, None]
-            _ts = _round_ts(dt.now(), ts_round_ms)
-            seg_id = int(_ts.strftime("%Y%m%d%H%M%S%f")[:-4])
+            _ts = _round_ts(timestamp, ts_round_ms)  # 終点と同じレコード（A-7）
+            seg_id = _new_seg_id(_ts)
             seg_ts = _ts.strftime("%Y-%m-%d %H:%M:%S.%f")
             seg_ind = 1
             segment_buffer.append([seg_id, seg_ind, seg_ts, 0] + value)

@@ -4,34 +4,17 @@
 """
 ########################################
 # Find Trigger Module [Agentic Template]
-# Ver: 01.e.20261005    By: IWATA, Y.'s Agent AI
-# Mod: 初回接続の失敗を ErrorIF へ報告（phase=startup / category=comm。A-21）
+# Ver: 01.f.20261102    By: IWATA, Y.'s Agent AI
+# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
 ########################################
-f_agentic_trigger  # エージェントスクリプトを Subprocess で起動し、TCPソケットでデータを受信してキューに流す
+別プロセスのエージェントから値を受け取って取り込む、Agentic Trigger の Find 側の雛形
 
-動作概要
-    1. agent_script をサブプロセスで起動し、一定時間待機
-    2. TCP ソケットで agent に接続し、GET/ACK/NACK プロトコルでデータを受信
-    3. 受信 JSON データを col_def の dtype に従いキャストして queue_out に送信
-    4. キャスト失敗時は NACK を送信してリトライ（最大 99 回）
-    5. 通信失敗時はエージェントを再起動してオフラインモードから復帰
-    6. ハートビートファイルを定期的に更新（agent 側の生存確認用）
+主要関数:
+f_agentic_trigger  # エージェントをサブプロセスで起動し、TCP ソケットで値を受け取ってキューに流す。
 
-接続設定
-    agent_name            : エージェント識別名（必須）
-    agent_script          : エージェントスクリプトのパス（必須）
-    agent_python          : Python 実行ファイルのパス（省略可）
-    server_ip             : エージェントが待ち受ける IP アドレス（デフォルト: "127.0.0.1"）
-    server_port           : エージェントが待ち受ける TCP ポート番号（デフォルト: 52001）
-    connect_timeout_sec   : 接続タイムアウト秒（デフォルト: 5）
-    server_start_wait_sec : エージェント起動後の待機時間秒（デフォルト: 10.0）
-    interval_reconn_sec   : 再接続試行間隔秒（デフォルト: 5.0）
-    polling_ms            : ポーリング間隔ミリ秒（デフォルト: 100）
-    hb_interval_sec       : ハートビート更新間隔秒（デフォルト: 3.0）
-    req_msg               : 要求メッセージ文字列（デフォルト: "GET"）
-    encode                : 通信エンコーディング（デフォルト: "utf-8"）
-    sep                   : パケット区切り文字（デフォルト: "\\n"）
-    chunk                 : 受信チャンクサイズ（デフォルト: 1024）
+位置づけ: エージェント側の見本は tri_s19_socket_server_agent。
+設計意図: TriEdge 本体に組み込めない処理（重いライブラリ、32bit / 64bit の混在など）を、別のプロセスに分けて動かせるようにする。通信に失敗したらエージェントを起動し直し、ハートビートでエージェントに生存を知らせて、本体が止まったときにエージェントも止まるようにする。
+前提・制約: 作り方は『新規トリガー開発ガイドライン』の「Agentic Trigger の作り方」を参照。
 """
 MODULE_NAME = "FIND_AGENTIC"
 
@@ -109,6 +92,10 @@ def f_agentic_trigger(
     """
     Agent を Subprocess で起動・管理
     Mod: 2026.04.24    By: IWATA,Y.
+
+    [動作の要点]（旧モジュール Docstring から移動）
+        エージェントとは GET / ACK / NACK で通信する。受信した JSON を col_def の dtype で型変換し、失敗したら NACK を送って送り直してもらう（最大 99 回）
+        通信に失敗したらエージェントを再起動し、オフラインモードから復帰する
     """
     TRIGGER_NAME = "f_agentic_trigger"
     _SIG_OFFLINE = f"ConnectionFailed.comm.loop.{TRIGGER_NAME}"

@@ -4,67 +4,19 @@
 """
 ########################################
 # Act Trigger Module [MT-method Diagnosis]
-# Ver: 02.b.20261005    By: IWATA, Y.'s Agent AI
-# Mod: 統計まわりを tri_s10_stream_wave_stat の init_stats / calc_stats に集約（値が出せなかった項目を共通形式でログに出す。B-9）。device_key_to_add の値が常に空で端末情報が付与されていなかった不具合を修正（tri_s19_util に集約）
+# Ver: 02.d.20261102    By: IWATA, Y.'s Agent AI
+# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
 ########################################
-a_mt_diag_trigger  # セグメントの統計量を算出し、事前学習済み単位空間とのマハラノビス距離で異常判定するAct Trigger
+波形の統計量を MT 法（マハラノビス距離）で評価し、正常な状態からの離れ具合で異常を見つける
 
-動作概要
-    1. 起動時に統計量算出定義（column_register_map / out_coldef、全モデル共通）を初期化する
-       （計算エンジンは tri_edge_12_act_store_stats_sqlite 等と共通の tri_s10_stream_wave_stat を使用）
-    2. 起動時に models（複数モデルの定義）を全て検証・コンパイルする
-       （モデルごとの単位空間定義JSONを事前に読込んでおく。実行中の都度読込みはしない）
-    3. ループ内でキューからセグメントを受信し項目数の整合性を確認する
-    4. セグメントの終点行（変化後）を除外してから統計量を算出する
-    5. model_select_col_idx の値で使用するモデルを選択する
-       （該当モデルが無ければ default_model にフォールバック。それも無ければ判定をスキップする）
-    6. 選択したモデルの mt_target_col_names で指定した統計量列を並べてベクトル化し、
-       そのモデルの単位空間とのマハラノビス距離（m_dis）を計算する（標準ライブラリのみ）
-    7. m_dis > border のとき異常と判定する（border未指定の場合は常に正常と判定する）
-    8. 1セグメントにつき、ヘッダ+1行のCSVファイルを1つ保存する
-       （seg_id・m_dis・border・異常判定・寄与度最大の変数とその値・使用モデル名に加え、
-       全変数の元の値（{変数名}_val）・全変数のSN比（{変数名}_snr）を含む）
-       正常/異常で異なるファイル名プレフィックス（normal_file_pfx / anomaly_file_pfx）を使う
-    9. device_key_to_add が指定されている場合は端末情報を行に付与して出力する
-    10. ack_ext が指定されている場合は CSV 保存後に ACK ファイル（.done 等）を作成する
-    11. stop_event が立ちキューが空になった時点でループを終了する
+主要関数:
+a_mt_diag_trigger   # セグメントの統計量を求め、単位空間とのマハラノビス距離で異常を判定して CSV で保存する。
+_calc_mahalanobis   # マハラノビス距離と、変数ごとの寄与度（SN 比）を求める。
+_load_unit_space    # 単位空間の定義 JSON を読み込む（起動時に1回）。
 
-    ※ pandas/numpyは使用しない（TriEdgeのexeレイヤー軽量化方針に合わせ、標準ライブラリのみで実装）。
-       共分散・逆行列の計算（「学習」フェーズ）はスコープ外。診断（マハラノビス距離の計算）は
-       単純な行列×ベクトルの掛け算のみのため、外部ライブラリ無しで実装可能。
-
-単位空間定義JSON（unit_space_json）のフォーマット
-    {
-        "variables": ["D100_mean", "D100_std", ...],   ("省略可。mt_target_col_namesとの対応検証用)
-        "mean"   : [0.12, 0.05, ...],                   (平均ベクトル、長さn)
-        "inv_cov": [[1.1, -0.2, ...], ...],             (共分散行列の逆行列、n×n)
-        "var"    : [0.02, 0.01, ...]                    (各変数の分散＝共分散行列の対角成分、長さn。寄与度計算に使用)
-    }
-
-接続設定
-    save_dir             : CSV 保存先ディレクトリ（system_root からの相対パス、デフォルト: "output"）
-    encode               : CSV ファイルの文字エンコーディング（デフォルト: "utf-8"）
-    normal_file_pfx      : 正常判定時のCSVファイル名プレフィックス（デフォルト: "mtdiag_normal"）
-    anomaly_file_pfx     : 異常判定時のCSVファイル名プレフィックス（デフォルト: "mtdiag_anomaly"）
-    ack_ext              : ACK ファイル拡張子（空文字列の場合は作成しない、デフォルト: ""）
-    device_key_to_add    : 端末情報から付与するキーのリスト（デフォルト: []）
-    column_register_map  : 統計量の計算定義（必須。全モデル共通。tri_s10_stream_wave_stat 参照）
-    out_coldef            : 出力列の定義（必須。全モデル共通。tri_s10_stream_wave_stat 参照）
-
-    model_select_col_idx  : モデル選択に使う列のインデックス（必須。品番・設備状態等が入る列）
-    models                 : モデル定義の辞書（必須。1つ以上）
-                              {"モデルキー（品番等の文字列）": {
-                                  "mt_target_col_names": [...],
-                                  "unit_space_json": ...,
-                                  "border": ...（省略可）,
-                                  "mt_normalize": ...（省略可、デフォルトfalse）
-                              }, ...}
-    default_model          : model_select_col_idx の値がどのモデルにも一致しない場合に
-                              フォールバックするモデルキー（省略可）。
-                              省略時、該当モデルが無いセグメントは判定をスキップする（警告ログ出力）
-                             ※ どちらの場合も border は m_dis と直接比較する値のため、
-                                trueに切り替えた場合は border の値も見直しが必要
-    filename_tokens       : ファイル名を組み立てるトークンのリスト（省略可。tri_edge_12_act_save_csv.py 参照）
+位置づけ: 単位空間の作成（学習）は Stored 領域で行い、このモジュールは診断だけを受け持つ。統計量の算出は tri_s10_stream_wave_stat を使う。
+設計意図: 診断は行列とベクトルの掛け算だけで済むため、外部ライブラリを使わず標準ライブラリで実装し、exe を軽く保つ。寄与度が最大の変数も出力し、異常の原因を推定しやすくする。品番などの値でモデルを切り替え、1台のエッジで複数の品種を診断できるようにする。
+前提・制約: border を指定しない場合は常に正常と判定する。mt_normalize を切り替えた場合は border の見直しが必要。
 """
 MODULE_NAME = "ACT_MT_Diag"
 
@@ -223,6 +175,14 @@ def _load_unit_space(json_path: str) -> Dict[str, Any]:
          決め打ちの json.load() から変更。BOM有無・cp932等のエンコード差異を自動で
          フォールバックする。encode_ 引数は出力CSVのエンコード指定と兼用していたが、
          役割が異なるため分離した（出力側は従来通り encode_ を使用）。）
+
+    [単位空間定義 JSON のフォーマット]（旧モジュール Docstring から移動）
+        {
+            "variables": ["D100_mean", "D100_std", ...],   (省略可。mt_target_col_names との対応検証用)
+            "mean"   : [0.12, 0.05, ...],                   (平均ベクトル、長さ n)
+            "inv_cov": [[1.1, -0.2, ...], ...],             (共分散行列の逆行列、n×n)
+            "var"    : [0.02, 0.01, ...]                    (各変数の分散 = 共分散行列の対角成分、長さ n。寄与度計算に使用)
+        }
     """
     data, used_enc = base.read_json_safely(json_path)
 
@@ -308,6 +268,11 @@ def a_mt_diag_trigger(
     """
     セグメントの統計量を算出し、事前学習済み単位空間とのマハラノビス距離で異常判定
     Mod: 2026.07.16    By: IWATA,Y.
+
+    [動作の要点]（旧モジュール Docstring から移動）
+        選択したモデルの mt_target_col_names の統計量を並べてベクトルにし、m_dis > border のとき異常とする
+        判定結果 CSV（1セグメント = ヘッダ + 1行。正常 / 異常でファイル名の接頭語を変える）:
+            seg_id・m_dis・border・異常判定・寄与度最大の変数とその値・使用モデル名・全変数の元の値（{変数名}_val）・全変数の SN 比（{変数名}_snr）
     """
     TRIGGER_NAME = "a_mt_diag_trigger"
     func_name = sys._getframe().f_code.co_name
@@ -346,9 +311,7 @@ def a_mt_diag_trigger(
         model_select_col_idx = config.get("model_select_col_idx")
         if model_select_col_idx is None:
             raise ValueError("model_select_col_idx is required")
-        model_select_col_idx = int(model_select_col_idx)
-        if not (0 <= model_select_col_idx < n_col_def):
-            raise ValueError(f"model_select_col_idx={model_select_col_idx} out of range (0-{n_col_def-1})")
+        model_select_col_idx = base.resolve_act_col(model_select_col_idx, col_def, "model_select_col_idx")  # Find と同じ列番号
 
         models_cfg = config.get("models")
         if not models_cfg:

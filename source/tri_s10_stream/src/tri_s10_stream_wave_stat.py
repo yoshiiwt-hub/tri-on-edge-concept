@@ -4,33 +4,21 @@
 """
 ########################################
 # Segment Stats Calculation Functions
-# Ver: 01.c.20261005    By: IWATA, Y.'s Agent AI
-# Mod: Act Trigger 共通の init_stats / calc_stats / export_out_coldef を追加（統計まわりの配線の集約。B-9）
+# Ver: 01.f.20261102    By: IWATA, Y.'s Agent AI
+# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
 ########################################
-init_stats            # [Act 共通] 設定の必須チェック・コンパイルを行い StatsContext を返す（起動時に1回）
-calc_stats            # [Act 共通] build_stats で統計量を算出し、値が出せなかった項目（_WARN）を共通形式でログに出す
-export_out_coldef     # [Act 共通] 出力列定義（out_coldef）を JSON ファイルに保存する
-compile_register_map  # column_register_map と output_column を検証・コンパイルして計算関数リストを返す
-build_stats           # コンパイル済みエントリリストに基づきセグメントの統計量 dict を構築して返す
-_stat_mean            # 平均値を算出する
-_stat_min             # 最小値を算出する
-_stat_max             # 最大値を算出する
-_stat_std             # 母標準偏差を算出する
-_stat_count           # 有効値件数を返す
-_stat_sum             # 合計値を算出する
-_stat_range           # 範囲（max - min）を算出する
-_stat_med             # 中央値を算出する
-_stat_iqr             # IQR（四分位範囲）を算出する
+セグメントから統計量を求める処理を、統計量を出力する Act の間で共通化する
 
-動作概要
-    1. compile_register_map() で column_register_map と output_column を検証し計算クロージャリストを生成する
-    2. make_stat_func() で stat_name（mean / min / max / std / count / sum / range / med / iqr / first / last / nth / pertl / sig_u / sig_l / mode / n_null / seg_len / const）に対応するクロージャを生成する
-       ※ first/last/nth/mode/const は数値専用のfloat変換を経由せず、行の生の値（任意型）をそのまま返す
-    3. スライス指定（[start_frac, end_frac]）により対象区間を絞り込んでから統計量を算出できる
-    4. build_stats() はコンパイル済みリストを受け取りセグメント全行を走査して統計量 dict を返す
-    5. warn 発生時は {out_key}_WARN キーに理由を記録し value が None の場合はそのキーを出力しない
-    6. Act Trigger は init_stats（起動時）→ calc_stats（セグメントごと）を使う。calc_stats は build_stats の結果を
-       そのまま返し（_WARN キーも含む。出力内容は Act ごとに従来どおり）、_WARN があればログファイルに1行出す
+主要関数:
+init_stats            # 設定を検証・コンパイルし、実行コンテキストを返す（Act の起動時に1回）。
+calc_stats            # セグメントの統計量を求め、求められなかった項目をログに出す（セグメントごと）。
+compile_register_map  # column_register_map と output_column を検証し、計算関数のリストにする。
+build_stats           # コンパイル済みのリストに従って、統計量の辞書を作る。
+export_out_coldef     # 出力列の定義を JSON ファイルに保存する。
+
+位置づけ: 統計量を出力する Act（CSV・SQLite・Socket・MQTT・RDB・PLC 等）から呼ばれる。Act は init_stats（起動時）→ calc_stats（セグメントごと）の順に使う。
+設計意図: 設定の検証と計算関数の組み立ては起動時に済ませ、セグメントごとの処理は組み立て済みの関数を順に呼ぶだけにする。設定の誤りは起動時に止め、稼働中に気づく事態を避ける。値を出せなかった項目は理由（{出力キー}_WARN）を残し、黙って欠けないようにする。
+前提・制約: 列の指定は Find と同じ列番号で書き、先頭の固定4列は seg_id / seg_ind / seg_ts / seg_status の名前で書く。
 """
 MODULE_NAME = "Calc_Seg_Stats"
 
@@ -250,19 +238,32 @@ def compile_register_map(
     """column_register_map と output_column を検証・コンパイルしてリストを返す
     [エントリ形式]
         column_register_map:
+            ※ src_col_idx は Find と同じ列番号（0 始まり）。先頭の固定4列は "seg_id" / "seg_ind" / "seg_ts" / "seg_status" の名前で書く
+              （行の中の位置への変換は base.resolve_act_col）
             "index": [src_col_idx, "stat_name"]
             "index": [src_col_idx, "stat_name", [start, end]]
             "index": [src_col_idx, "stat_name", param]
             "index": [src_col_idx, "stat_name", [start, end], param]
             "index": [-1, "const", value]              ← 固定値（セグメント内容に依存しない。src_col_idxは任意の値でOK）
+            "index": [src_index, "judge", rules]          ← 判定（src_index は column_register_map の番号。Find の列番号ではない）
+            "index": [src_index, "judge", rules, default]
+                rules  : [{"in": [値, ...], "to": 判定結果}, {"range": [最小, 最大], "to": 判定結果}, ...]
+                         上から順に照合し、最初に一致した "to" を出す。どれにも一致しなければ default（省略時は値なし）
+                         元の列の値が出せなかった場合も default
+                in     : 元の列の値がリストのどれかと等しい（元の列の dtype が str / int / float）
+                range  : 最小 <= 元の列の値 <= 最大（両端を含む。null は下限・上限なし。元の列の dtype が int / float）
+                ※ 判定結果は必ず自分の列（新しい列）に出す。元の列の値は変えない
+                ※ in の値は元の列の dtype に、to / default は自分の列の dtype に、起動時に変換する（int は整数のみ）
 
         output_column:
             "index": ["出力キー名", "dtype", "role", "var_type", "説明"]
             ※ index は column_register_map と一致させること
     [検証]
         - column_register_map / output_column のキーが一致しない → ValueError（起動停止）
-        - src_col_idx 範囲外 → ValueError
+        - src_col_idx 範囲外・不正な名前 → ValueError
         - 不正 stat_name / 不正 params → ValueError
+        - judge: 元の列が無い・自分自身・judge / dtype が int・float・str 以外（time 等）/ str の列に range /
+                 rules の形が不正（range の最小 > 最大を含む）/ dtype に変換できない値 → ValueError
     [返り値]
         [(out_key, func(seg, n_rows) -> (value, warn_or_None)), ...]
         index 昇順にソート済み
@@ -295,11 +296,16 @@ def compile_register_map(
 
         # column_register_map エントリ パース
         try:
-            src_col_idx = int(entry[0])
+            src_col_raw = entry[0]
             stat_name   = str(entry[1])
             rest        = list(entry[2:])
         except (IndexError, ValueError, TypeError) as e:
             raise ValueError(f"[{idx}] column_register_map エントリ不正: {entry}  ({e})")
+
+        # judge : 別の統計量の列の値を判定する（Find の列は使わない）
+        if stat_name == "judge":
+            compiled.append((out_key, _compile_judge(idx, entry, crm, oc)))
+            continue
 
         # スライス解析（rest[0] がリスト/タプル → スライス指定）
         slice_spec  = None
@@ -314,11 +320,11 @@ def compile_register_map(
             except (TypeError, ValueError):
                 pass   # 不正スライス → 全行
 
-        # src_col_idx 範囲チェック（seg_len / const 以外）
-        if stat_name not in ("seg_len", "const") and not (0 <= src_col_idx < len(c_keys)):
-            raise ValueError(
-                f"[{idx}] src_col_idx={src_col_idx} out of range "
-                f"(valid: 0?{len(c_keys)-1})")
+        # src_col_idx を行の中の位置に変換（Find の列番号 + 4、または固定4列の名前。seg_len / const は列を使わない）
+        if stat_name in ("seg_len", "const"):
+            src_col_idx = -1
+        else:
+            src_col_idx = base.resolve_act_col(src_col_raw, c_keys, f"column_register_map[{idx}]")
 
         # クロージャ生成（不正パラメータは ValueError で即時検出）
         try:
@@ -378,8 +384,12 @@ def make_stat_func(
     slice_spec:  Optional[Tuple[float, float]],
     stat_params: list,
 ) -> Any:
-    """stat計算ロジックを生成。LOOP INIT 時に呼び出す"""
-    
+    """stat計算ロジックを生成。LOOP INIT 時に呼び出す
+    stat_name: mean / min / max / std / count / sum / range / med / iqr / first / last / nth / pertl / sig_u / sig_l / mode / n_null / seg_len / const
+    ※ first / last / nth / mode / const は数値専用の float 変換を経由せず、行の生の値（任意型）をそのまま返す
+    slice_spec: [start_frac, end_frac] で対象区間を絞り込んでから算出する（seg_len は全行数のため適用しない）
+    """
+
     # seg_len : セグメントの全行数（スライス非適用）
     if stat_name == "seg_len":
         def _f(seg, n_rows):
@@ -484,7 +494,7 @@ def make_stat_func(
     sf = stat_funcs.get(stat_name)
     if sf is None:
         _avail = sorted(stat_funcs.keys()) + [
-            "nth", "pertl", "sig_u", "sig_l", "mode", "n_null", "seg_len", "const"]
+            "nth", "pertl", "sig_u", "sig_l", "mode", "n_null", "seg_len", "const", "judge"]
         raise ValueError(f"unknown stat_name='{stat_name}'  available={_avail}")
 
     def _f(seg, n_rows, _ss=slice_spec, _src=src_col_idx, _sf=sf):
@@ -513,13 +523,144 @@ def build_stats(
         "seg_ts_end"  : seg[-1][2],
         "seg_rows"    : n_rows,
     }
+    judges: List[Tuple[str, Any]] = []
     for out_key, func in compiled:
+        if isinstance(func, _JudgeFunc):
+            judges.append((out_key, func))
+            continue
         value, warn = func(seg, n_rows)
         if warn:
             result[f"{out_key}_WARN"] = warn
         elif value is not None:
             result[out_key] = value
+    # judge は通常の統計量を算出した後に判定する（元の列の値を使うため）
+    for out_key, func in judges:
+        value = func(result)
+        if value is not None:
+            result[out_key] = value
     return result
+
+
+########################################
+# Judge Functions（統計量の値を条件で判定し、判定結果を新しい列に出す）
+########################################
+
+JUDGE_DTYPES = ("int", "float", "str")
+
+
+def _judge_cast(value: Any, dtype: str, where: str) -> Any:
+    """
+    judge の値（in の値・to・default）を dtype に合わせる（起動時に呼ぶ）
+    str: 文字列にする / int: 整数にする（整数にならない値はエラー）/ float: 数値にする
+    変換できない値・bool は ValueError
+    Mod: 2026.10.29    By: IWATA, Y.'s Agent AI
+    """
+    if isinstance(value, bool) or value is None:
+        raise ValueError(f"{where}: {value!r} cannot be used as {dtype}")
+    if dtype == "str":
+        return str(value)
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{where}: {value!r} cannot be converted to {dtype}")
+    if dtype == "int":
+        if not num.is_integer():
+            raise ValueError(f"{where}: {value!r} is not an integer (dtype=int)")
+        return int(num)
+    return num
+
+
+class _JudgeFunc:
+    """
+    judge の判定関数（_compile_judge が作り、build_stats が通常の統計量の後に呼ぶ）
+        src_key   : 元の列の出力キー名
+        src_dtype : 元の列の dtype（照合の仕方を決める）
+        rules     : [("in", frozenset, to) / ("range", (最小 or None, 最大 or None), to), ...]（上から順に照合）
+        default   : どれにも一致しない・元の列の値が無いときの値（None なら値なし）
+    Mod: 2026.10.29    By: IWATA, Y.'s Agent AI
+    """
+    def __init__(self, src_key: str, src_dtype: str, rules: List[Tuple[str, Any, Any]], default: Any):
+        self.src_key   = src_key
+        self.src_dtype = src_dtype
+        self.rules     = rules
+        self.default   = default
+
+    def __call__(self, result: Dict[str, Any]) -> Any:
+        value = result.get(self.src_key)
+        if value is None:
+            return self.default
+        if self.src_dtype == "str":
+            key = str(value)
+        else:
+            try:
+                key = float(value)
+            except (TypeError, ValueError):
+                return self.default
+        for kind, cond, to in self.rules:
+            if kind == "in":
+                if key in cond:
+                    return to
+            elif (cond[0] is None or cond[0] <= key) and (cond[1] is None or key <= cond[1]):
+                return to
+        return self.default
+
+
+def _compile_judge(idx: str, entry: list, crm: Dict[str, Any], oc: Dict[str, Any]) -> _JudgeFunc:
+    """
+    judge エントリ [src_index, "judge", rules(, default)] を検証・コンパイルする（起動時）
+    src_index は column_register_map の番号。条件は元の列の dtype、判定結果は自分の列の dtype に合わせる
+    Mod: 2026.10.29    By: IWATA, Y.'s Agent AI
+    """
+    src_raw = entry[0]
+    if isinstance(src_raw, bool) or not str(src_raw).strip().isdigit():
+        raise ValueError(f"[{idx}] judge: source index {src_raw!r} must be a column_register_map index")
+    src = str(int(str(src_raw).strip()))
+    if src not in crm:
+        raise ValueError(f"[{idx}] judge: source index {src} is not in column_register_map")
+    if src == idx:
+        raise ValueError(f"[{idx}] judge: source index must not be itself")
+    src_entry = crm[src]
+    if isinstance(src_entry, (list, tuple)) and len(src_entry) > 1 and str(src_entry[1]) == "judge":
+        raise ValueError(f"[{idx}] judge: source index {src} is also judge (judge of judge is not allowed)")
+
+    try:
+        src_key, src_dtype = str(oc[src][0]), str(oc[src][1])
+        dst_dtype = str(oc[idx][1])
+    except (IndexError, TypeError) as e:
+        raise ValueError(f"[{idx}] judge: output_column entry has no dtype  ({e})")
+    for name, dtype in (("source", src_dtype), ("output", dst_dtype)):
+        if dtype not in JUDGE_DTYPES:
+            raise ValueError(f"[{idx}] judge: {name} dtype {dtype!r} is not supported (use {list(JUDGE_DTYPES)})")
+
+    rest = list(entry[2:])
+    if not rest or len(rest) > 2 or not isinstance(rest[0], list) or not rest[0]:
+        raise ValueError(f"[{idx}] judge: [src_index, \"judge\", rules(, default)] with non-empty rules list is required")
+    default = _judge_cast(rest[1], dst_dtype, f"[{idx}] judge default") if len(rest) == 2 and rest[1] is not None else None
+
+    rules: List[Tuple[str, Any, Any]] = []
+    for i, rule in enumerate(rest[0]):
+        where = f"[{idx}] judge rules[{i}]"
+        if not isinstance(rule, dict) or "to" not in rule or (("in" in rule) == ("range" in rule)) \
+                or set(rule.keys()) - {"in", "range", "to"}:
+            raise ValueError(f"{where}: must be {{\"in\": [...], \"to\": ...}} or {{\"range\": [min, max], \"to\": ...}}")
+        to = _judge_cast(rule["to"], dst_dtype, f"{where} to")
+        if "in" in rule:
+            values = rule["in"]
+            if not isinstance(values, list) or not values:
+                raise ValueError(f"{where}: in must be a non-empty list")
+            rules.append(("in", frozenset(_judge_cast(v, "str" if src_dtype == "str" else "float", f"{where} in")
+                                          for v in values), to))
+        else:
+            if src_dtype == "str":
+                raise ValueError(f"{where}: range cannot be used for str source (use in)")
+            bounds = rule["range"]
+            if not isinstance(bounds, list) or len(bounds) != 2:
+                raise ValueError(f"{where}: range must be [min, max]")
+            lo, hi = (None if v is None else _judge_cast(v, "float", f"{where} range") for v in bounds)
+            if lo is not None and hi is not None and lo > hi:
+                raise ValueError(f"{where}: range min {lo} > max {hi}")
+            rules.append(("range", (lo, hi), to))
+    return _JudgeFunc(src_key, src_dtype, rules, default)
 
 
 ########################################

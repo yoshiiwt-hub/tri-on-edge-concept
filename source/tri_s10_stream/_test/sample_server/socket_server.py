@@ -4,9 +4,9 @@
 """
 ########################################
 # Sample Socket Server [CSV Reader]
-# Ver: 01.k.20261012    By: IWATA, Y.'s Agent AI
-# Mod: テストからも使えるよう SocketServer クラスに切り出し（空きポートの自動割当・start/stop・PUT 受信データの保持・
-#      接続ごとのスレッド処理）。import しただけでは設定を読まない。CSV のヘッダ行の読み飛ばし（csv_header）を追加
+# Ver: 01.l.20261025    By: IWATA, Y.'s Agent AI
+# Mod: テスト用の設定を追加（ng_puts: 指定した PUT に "NG" を返す / split_ack: ACK を2回に分けて送る /
+#      close_after_puts: N 件目の PUT を受けたら応答せずに接続を切る（番号ごとに1回。複数指定可））。既定値では従来どおり（A-8 / A-9）
 ########################################
 CSVファイル（または行のリスト）を1行ずつ、ソケットクライアントからの要求に応じてJSON形式で返すサンプルサーバー。
 TriOnEdge 本体（tri_s00_supervise_base 等）に依存しない、スタンドアロン実装。
@@ -30,7 +30,7 @@ TriOnEdge 本体（tri_s00_supervise_base 等）に依存しない、スタン�
     サーバー → クライアント:
         GET への応答 : JSON配列 + "\\n"  例: ["2026-10-12 09:00:00.000000", "RUN", 1.0] + "\\n"
         NACK への応答: 直前に返した行を再送
-        PUT への応答 : "OK\\n"（put_ack=false なら返さない）
+        PUT への応答 : "OK\\n"（put_ack=false なら返さない。テスト用に ng_puts で指定した PUT には "NG\\n"）
 
     ※ TCP の特性上、"PUT\\n" と JSON データが同一の recv() で届く場合がある
 
@@ -146,6 +146,11 @@ class SocketServer:
         put_ack : PUT に "OK" を返すか（応答を読まないクライアントには False にする。設定ファイルの put_ack の説明を参照）
         encode / sep / chunk : 文字コード・区切り文字・受信サイズ
         verbose : 送受信の内容を画面に出す
+        ---- テスト用（act_socket の ACK・切断時の動作を確かめるため。既定値では従来どおり）----
+        ng_puts          : "NG" を返す PUT の番号（起動からの通し番号、1始まり）の集まり
+        split_ack        : True なら ACK を2回に分けて送る（"O" と "K\\n"。受信側が区切り文字まで読むかの確認用）
+        close_after_puts : N 件目の PUT を受けたら、応答を返さずに接続を切る（番号ごとに1回。リストで複数指定可。0 なら切らない）
+    Mod: 2026.10.25    By: IWATA, Y.'s Agent AI（テスト用の ng_puts / split_ack / close_after_puts を追加）
     """
 
     def __init__(
@@ -160,6 +165,9 @@ class SocketServer:
         sep:     str   = "\n",
         chunk:   int   = 1024,
         verbose: bool  = False,
+        ng_puts:          Optional[Sequence[int]] = None,
+        split_ack:        bool = False,
+        close_after_puts: Any  = 0,
     ) -> None:
         mode = str(mode).lower()
         if mode not in MODES:
@@ -175,6 +183,11 @@ class SocketServer:
         self.chunk   = int(chunk)
         self.verbose = bool(verbose)
         self.puts: List[Any] = []                  # PUT で受け取ったデータ（JSON はデコード済み）
+        self.ng_puts          = set(int(n) for n in (ng_puts or []))
+        self.split_ack        = bool(split_ack)
+        _cap = close_after_puts if isinstance(close_after_puts, (list, tuple, set)) else [close_after_puts]
+        self.close_after_puts = set(int(n) for n in _cap if n)
+        self._closed_at: set  = set()              # close_after_puts を実行した番号（番号ごとに1回だけ切る）
 
         self._lock   = threading.Lock()
         self._halt   = threading.Event()           # ※ threading.Thread の内部名（_stop 等）と重ならない名前
@@ -239,16 +252,39 @@ class SocketServer:
                 self._cursor += 1
         return cast_row(row, self.dtypes) if self.dtypes else list(row)
 
-    def _on_put(self, data_str: str) -> None:
-        """PUT で受け取ったデータを残す（JSON でなければ文字列のまま）"""
+    def _on_put(self, data_str: str) -> int:
+        """PUT で受け取ったデータを残す（JSON でなければ文字列のまま）。起動からの通し番号（1始まり）を返す"""
         try:
             data = json.loads(data_str)
         except ValueError:
             data = data_str
         with self._lock:
             self.puts.append(data)
+            n = len(self.puts)
         if self.verbose:
             _log(f"PUT RCV: {data}")
+        return n
+
+    def _reply_put(self, conn: socket.socket, n: int) -> bool:
+        """
+        PUT に応答する（put_ack / ng_puts / split_ack に従う）。close_after_puts の PUT なら応答せずに切断し False を返す
+        Mod: 2026.10.25    By: IWATA, Y.'s Agent AI
+        """
+        if n in self.close_after_puts and n not in self._closed_at:
+            self._closed_at.add(n)
+            if self.verbose:
+                _log(f"Close Connection after PUT #{n} (close_after_puts)")
+            return False
+        if not self.put_ack:
+            return True
+        reply = ("NG" if n in self.ng_puts else "OK") + self.sep
+        if self.split_ack and len(reply) > 1:
+            self._send(conn, reply[:1])
+            time.sleep(0.05)
+            self._send(conn, reply[1:])
+        else:
+            self._send(conn, reply)
+        return True
 
     def _recv(self, conn: socket.socket) -> Optional[bytes]:
         """1回受信する（受信待ちのタイムアウトなら None、相手が切断したら b"" を返す）"""
@@ -331,9 +367,9 @@ class SocketServer:
                     i_end = body.find(sep_b)
                     if i_end < 0:
                         break                                  # JSON の終わりがまだ届いていない
-                    self._on_put(body[:i_end].decode(self.encode).strip())
-                    if self.put_ack:
-                        self._send(conn, "OK" + self.sep)
+                    n_put = self._on_put(body[:i_end].decode(self.encode).strip())
+                    if not self._reply_put(conn, n_put):
+                        return                                 # close_after_puts: 応答せずに切断（finally で close）
                     buf = body[i_end + len(sep_b):]
 
         except (BrokenPipeError, ConnectionResetError, OSError):

@@ -4,9 +4,8 @@
 """
 ########################################
 # Integration Test [Stream Driver: Find -> Cutout -> Act]
-# Ver: 01.a.20261012    By: IWATA, Y.'s Agent AI
-# Mod: test_find_act_pipeline.py・pipeline_driver.py を統合し、test_demo_csv_sample.py の LOT ごとの切出し・統計量の確認を移した。
-#      socket の相手を sample_server/socket_server.py（SocketServer）に変更
+# Ver: 01.d.20261025    By: IWATA, Y.'s Agent AI
+# Mod: act_socket の ACK（区切り文字まで読む・NG の扱い）と、切断時の再送のテストを追加（A-8 / A-9）
 ########################################
 find / act を実際に呼び出して通す結合テスト
     find（入力）→ 波形切出し → act（出力）を、テスト用の簡易ドライバ（run_pipeline）でつなぐ。
@@ -16,10 +15,14 @@ find / act を実際に呼び出して通す結合テスト
     B. find_demo（CSV）     → act_socket（全行送信 / 統計量送信）  … 受信側で内容を確認
     C. find_socket（受信）  → act_tmpl_queue                       … サンプルサーバーから受信して切出し
     D. エラー通知           … 異常な設定・接続先のとき、ErrorIF にイベントが届くこと
+    F. find の1件の受け取り … (count, value) / (count, value, 取得時刻) / 不正な形（StreamCore の _unpack_input_item）
+    G. act_socket の ACK と再送 … ACK が分かれて届く / NG（skip・retry・abort_segment）/ 送信中の切断 → 再送 /
+                               再送の上限超え・resend_max=0 の破棄 / 統計の1件送信の再送（サンプルサーバーのテスト用設定を使う）
     E. サンプルCSV（settings/data/generate_waveform_sample.csv） … LOT ごとに切り出し、行数・統計量が CSV と一致すること
 
     ※ run_pipeline は StreamCore ではありません。find / act を、常駐処理なしで動かして確認するための
-       テスト専用の簡易ループです（find をスレッドで起動 → 受信レコードを tri_s10_stream_wave_cutout で切り出す →
+       テスト専用の簡易ループです（find をスレッドで起動 → 受信レコードを StreamCore と同じ _unpack_input_item で受け取り、
+       tri_s10_stream_wave_cutout で切り出す →
        act の CUT_LAST_ROW 属性に従って終点行を除外 → act のキューへ渡す → 指定件数で停止）。
        対象はインメモリキュー（IMQ）の act のみ。ストレージキュー（STQ）は対象外
     ※ tri_s19_util を使うモジュール（find_file / act_file / act_csv）は、ここでは対象外
@@ -51,6 +54,7 @@ if TEST_DIR not in sys.path:                                         #  パッ�
 
 import src.tri_s00_supervise_base     as base
 from   src.tri_s01_error_if           import ErrorIF
+import src.tri_s10_stream_core        as core
 import src.tri_s10_stream_wave_cutout as cutout
 import src.tri_s10_stream_wave_stat   as stat
 import src.tri_s11_find_demo          as find_demo
@@ -86,6 +90,8 @@ class PipelineResult:
         self.segments: List[List[list]] = []   # act へ渡したセグメント（終点行の除外後）
         self.forced:   List[bool]        = []   # 各セグメントが上限による強制クローズか
         self.records:  int               = 0    # find から受け取ったレコード数
+        self.item_lens: List[int]        = []   # find から受け取った1件の要素数（2: (count, value) / 3: 取得時刻つき）
+        self.times:    List[dt]          = []   # 各レコードの時刻（取得時刻、なければ受信時刻）
         self.timed_out: bool             = False
         self.errors:   List[BaseException] = [] # find / act のスレッドで捕まえた例外
 
@@ -156,11 +162,17 @@ def run_pipeline(
                 result.timed_out = True
                 break
             try:
-                index, value = input_queue.get(timeout=0.1)
+                item = input_queue.get(timeout=0.1)
             except queue.Empty:
                 continue
+            unpacked = core._unpack_input_item(item)   # StreamCore と同じ受け取り方（A-7）
+            if unpacked is None:
+                continue
+            index, value, timestamp = unpacked
             result.records += 1
-            record = [dt.now(), index + 1, list(value)]
+            result.item_lens.append(len(item))
+            result.times.append(timestamp)
+            record = [timestamp, index + 1, list(value)]
             seg_id, seg_ind, prev_values, prev_status, seg_range = cutout.process_stream_record(
                 seg_id, seg_ind, record, seg_buffer, _on_cutout_segment,
                 prev_values, prev_status, seg_range,
@@ -278,13 +290,15 @@ class TestDemoCsvToTemplate(PipelineTestCase):
             COL_DEF_FIND,
             act_queue.a_template_imq_trigger,
             {"teams_notify": False,
-             "notify_values": [{"loc": 6, "row": 0}, {"loc": 6, "row": -1}]},   # 列6 = val（先頭4列がヘッダ）
+             "notify_values": [{"loc": 2, "row": 0}, {"loc": 2, "row": -1}]},   # Find の列2 = val（Act の行の中では位置6）
             SEG_START, SEG_END, n_segments=4)
 
         self.assertPipelineOk(res)
         self.assertEqual([len(s) for s in res.segments], EXPECTED_LENS)
         self.assertEqual([r[6] for r in res.segments[0]], [20.0, 30.0, 40.0])   # 終点行（IDLE）は含まれない
         self.assertTrue(all(r[5] == "RUN" for s in res.segments for r in s))
+        self.assertTrue(res.item_lens and all(n == 2 for n in res.item_lens))   # find_demo は (count, value)（受信時刻を使う）
+        self.assertEqual(ErrorIF.drain_events(), [])                               # (count, value) は正常扱い（報告しない）
 
         m = base.metrics_get_all()["ACT_Queue"]
         self.assertEqual(m["total_segments"] - before, 4)       # act が4セグメント処理した
@@ -328,7 +342,7 @@ class TestDemoCsvToSocket(PipelineTestCase):
             {"server_ip": "127.0.0.1", "server_port": srv.port,
              "timeout_sec": 2.0, "reconnect_interval_sec": 1.0, "ack_mode": True,
              "save_dir": self.tmp,
-             "column_register_map": {"0": [6, "mean"], "1": [6, "max"], "2": [-1, "seg_len"]},
+             "column_register_map": {"0": [2, "mean"], "1": [2, "max"], "2": [-1, "seg_len"]},   # Find の列2 = val
              "out_coldef": {"0": ["val_mean", "float", "num", "obj", "mean"],
                             "1": ["val_max",  "float", "num", "obj", "max"],
                             "2": ["rows",     "int",   "num", "exp", "rows"]}},
@@ -353,6 +367,7 @@ class TestSocketToTemplate(PipelineTestCase):
 
     def test_receive_from_sample_server_and_cut(self):
         srv = self.start_server(SocketServer(rows=ROWS))
+        started = dt.now()
         res = run_pipeline(
             find_socket.f_socket_client_trigger,
             {"server_ip": "127.0.0.1", "server_port": srv.port, "polling_ms": 2,
@@ -364,6 +379,17 @@ class TestSocketToTemplate(PipelineTestCase):
         self.assertEqual([len(s) for s in res.segments], EXPECTED_LENS)
         self.assertEqual([r[6] for r in res.segments[1]], [70.0, 80.0])
         self.assertIsInstance(res.segments[0][0][4], dt)        # 時刻の列は datetime に変換されている
+
+        # find_socket は (count, value, 取得時刻) を入れ、seg_ts・seg_id は取得時刻から作られる（A-7）
+        self.assertTrue(res.item_lens and all(n == 3 for n in res.item_lens))
+        self.assertTrue(all(started <= t <= dt.now() for t in res.times))           # 取得時刻はテスト実行中の時刻
+        self.assertEqual(res.times, sorted(res.times))                               # 受け取った順に増える
+        acquired = {t.strftime(TIME_FORMAT) for t in res.times}
+        for seg in res.segments:
+            self.assertTrue(all(row[2] in acquired for row in seg))                 # seg_ts は取得時刻（丸めなし）
+            self.assertEqual(seg[0][0], int(dt.strptime(seg[0][2], TIME_FORMAT).strftime("%Y%m%d%H%M%S%f")[:-4]))
+        ids = [seg[0][0] for seg in res.segments]
+        self.assertEqual(ids, sorted(set(ids)))                                      # seg_id は重複せず増える
 
 
 ########################################
@@ -433,9 +459,9 @@ class TestSampleCsvPerLot(PipelineTestCase):
         for seg in res.segments:
             self.assertEqual(len({row[5] for row in seg}), 1)                          # セグメント内は同じ LOT
 
-        # 2) 統計量（act 側の列番号 = find の列番号 + 4: Sin=6, Cos=7, Tan=8, CL=9）
+        # 2) 統計量（column_register_map は Find と同じ列番号で書く: Sin=2, Cos=3, Tan=4, CL=5）
         c_keys = [v[0] for v in ACT_HEADER.values()] + [SAMPLE_COL_DEF[i][0] for i in range(len(SAMPLE_COL_DEF))]
-        crm = {"0": [6, "mean"], "1": [7, "max"], "2": [9, "max"], "3": [-1, "seg_len"]}
+        crm = {"0": [2, "mean"], "1": [3, "max"], "2": [5, "max"], "3": [-1, "seg_len"]}
         oc  = {"0": ["sin_mean", "float", "num", "obj", ""], "1": ["cos_max", "float", "num", "obj", ""],
                "2": ["cl_max",   "int",   "cat", "obj", ""], "3": ["rows",    "int",   "num", "exp", ""]}
         compiled = stat.compile_register_map(crm, oc, c_keys)
@@ -445,6 +471,208 @@ class TestSampleCsvPerLot(PipelineTestCase):
             self.assertAlmostEqual(r["sin_mean"], sum(float(x["Sin"]) for x in rows) / n_rows, places=3, msg=lot)
             self.assertAlmostEqual(r["cos_max"],  max(float(x["Cos"]) for x in rows),          places=3, msg=lot)
             self.assertEqual(r["cl_max"], max(int(x["CL"]) for x in rows), lot)         # 異常（1）を含む LOT は 1
+
+
+
+########################################
+# F. find の1件の受け取り（StreamCore の _unpack_input_item。A-7）
+########################################
+class TestUnpackInputItem(unittest.TestCase):
+
+    def setUp(self) -> None:
+        ErrorIF.init()
+
+    def test_two_items_use_receive_time_without_report(self):
+        before = dt.now()
+        index, value, ts = core._unpack_input_item((5, [1, 2]))
+        self.assertEqual((index, value), (5, [1, 2]))
+        self.assertTrue(before <= ts <= dt.now())                 # Core の受信時刻
+        self.assertEqual(ErrorIF.drain_events(), [])               # 正常扱い（報告しない）
+
+    def test_three_items_use_find_timestamp(self):
+        t = dt(2026, 10, 25, 12, 34, 56, 789000)
+        self.assertEqual(core._unpack_input_item((7, ["a"], t)), (7, ["a"], t))
+        self.assertEqual(core._unpack_input_item([7, ["a"], t]), (7, ["a"], t))   # リストでもよい
+        self.assertEqual(ErrorIF.drain_events(), [])
+
+    def test_invalid_timestamp_is_reported_and_receive_time_is_used(self):
+        before = dt.now()
+        index, value, ts = core._unpack_input_item((1, [0], "2026-10-25 12:00:00"))
+        self.assertEqual((index, value), (1, [0]))
+        self.assertTrue(before <= ts <= dt.now())
+        ev = ErrorIF.drain_events()
+        self.assertEqual([(e["phase"], e["category"]) for e in ev], [("loop", "data")])
+
+    def test_invalid_shape_is_reported_and_dropped(self):
+        for item in ((1,), (1, [0], dt.now(), "x"), "bad", None, 3):
+            with self.subTest(item=item):
+                self.assertIsNone(core._unpack_input_item(item))
+                ev = ErrorIF.drain_events()
+                self.assertEqual([(e["phase"], e["category"]) for e in ev], [("loop", "data")])
+
+
+
+########################################
+# G. act_socket の ACK と再送（A-8 / A-9）
+########################################
+SOCK_COL_DEF_ACT = make_act_col_def(COL_DEF_FIND)   # [seg_id, seg_ind, seg_ts, seg_status, ts, lot, val]
+
+
+def make_seg(seg_id: int, vals: List[float]) -> List[list]:
+    """act に渡すセグメント（行: 先頭4列 + ts / lot / val）"""
+    return [[seg_id, i + 1, f"2026-10-25 09:00:0{i}.000000", 0, T0 + timedelta(seconds=i), "RUN", v]
+            for i, v in enumerate(vals)]
+
+
+def run_act_socket(func: Callable, config: Dict[str, Any], segments: List[List[list]],
+                   wait_after_sec: float = 0.0, timeout_sec: float = 20.0) -> List[BaseException]:
+    """act_socket を単体で動かす（セグメントを渡し、wait_after_sec 待ってから終了の合図）。スレッドの例外を返す"""
+    q: "queue.Queue[Any]" = queue.Queue()
+    stop = threading.Event()
+    errors: List[BaseException] = []
+
+    def _run() -> None:
+        try:
+            func(q, SOCK_COL_DEF_ACT, config, stop)
+        except BaseException as e:
+            errors.append(e)
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    for seg in segments:
+        q.put(seg)
+    time.sleep(wait_after_sec)
+    q.put(None)
+    t.join(timeout=timeout_sec)
+    stop.set()
+    t.join(timeout=5)
+    return errors
+
+
+class TestActSocketAckAndResend(PipelineTestCase):
+    """本番と同じエラーポリシー（settings/error_policy.json）で動かす（接続断は loop_comm_retry_forever で継続）"""
+
+    def setUp(self) -> None:
+        super().setUp()
+        ErrorIF.init(policy_path=os.path.join(ROOT, "settings", "error_policy.json"))
+
+    def _cfg(self, srv: SocketServer, **kw: Any) -> Dict[str, Any]:
+        cfg = {"server_ip": "127.0.0.1", "server_port": srv.port, "timeout_sec": 2.0,
+               "reconnect_interval_sec": 0.2, "ack_mode": True, "skip_on_offline": False}
+        cfg.update(kw)
+        return cfg
+
+    def _metrics(self) -> Dict[str, Any]:
+        return dict(base.metrics_get_all().get("ACT_Socket", {}))
+
+    def _delta(self, before: Dict[str, Any], key: str) -> int:
+        return self._metrics().get(key, 0) - before.get(key, 0)
+
+    def _ack_ng_events(self) -> List[Dict[str, Any]]:
+        return [e for e in ErrorIF.drain_events() if e.get("exc_type") == "AckNG"]
+
+    def test_split_ack_is_read_until_separator(self):
+        srv = self.start_server(SocketServer(mode="put_only", split_ack=True))
+        before = self._metrics()
+        errors = run_act_socket(act_socket.a_send_seg_trigger, self._cfg(srv), [make_seg(1, [1.0, 2.0, 3.0])])
+        self.assertEqual(errors, [])
+        self.assertTrue(srv.wait_puts(3))
+        self.assertEqual([p["val"] for p in srv.puts], [1.0, 2.0, 3.0])
+        self.assertEqual(self._ack_ng_events(), [])                    # "O" と "K\n" に分かれても OK と判定
+        self.assertEqual(self._delta(before, "total_sent_segments"), 1)
+        self.assertEqual(self._delta(before, "total_ack_ng"), 0)
+
+    def test_ack_ng_skip_reports_and_continues(self):
+        srv = self.start_server(SocketServer(mode="put_only", ng_puts=[2]))
+        before = self._metrics()
+        errors = run_act_socket(act_socket.a_send_seg_trigger, self._cfg(srv), [make_seg(1, [1.0, 2.0, 3.0])])
+        self.assertEqual(errors, [])
+        self.assertTrue(srv.wait_puts(3))
+        self.assertEqual([p["val"] for p in srv.puts], [1.0, 2.0, 3.0])  # 既定 skip: NG の行の次へ進む
+        ev = self._ack_ng_events()
+        self.assertEqual([(e["phase"], e["category"]) for e in ev], [("loop", "data")])
+        self.assertEqual(self._delta(before, "total_ack_ng"), 1)
+
+    def test_ack_ng_retry_resends_the_row(self):
+        srv = self.start_server(SocketServer(mode="put_only", ng_puts=[2]))
+        errors = run_act_socket(act_socket.a_send_seg_trigger, self._cfg(srv, ack_ng_action="retry", ack_retry=3),
+                                [make_seg(1, [1.0, 2.0, 3.0])])
+        self.assertEqual(errors, [])
+        self.assertTrue(srv.wait_puts(4))
+        self.assertEqual([p["val"] for p in srv.puts], [1.0, 2.0, 2.0, 3.0])  # 2行目を送り直して OK
+        self.assertEqual(len(self._ack_ng_events()), 1)
+
+    def test_ack_ng_abort_segment_skips_rest_but_next_segment_is_sent(self):
+        srv = self.start_server(SocketServer(mode="put_only", ng_puts=[2]))
+        errors = run_act_socket(act_socket.a_send_seg_trigger, self._cfg(srv, ack_ng_action="abort_segment"),
+                                [make_seg(1, [1.0, 2.0, 3.0]), make_seg(2, [9.0])])
+        self.assertEqual(errors, [])
+        self.assertTrue(srv.wait_puts(3))
+        self.assertEqual([(p["seg_id"], p["val"]) for p in srv.puts], [(1, 1.0), (1, 2.0), (2, 9.0)])
+
+    def test_invalid_ack_ng_action_stops_at_startup(self):
+        srv = self.start_server(SocketServer(mode="put_only"))
+        run_act_socket(act_socket.a_send_seg_trigger, self._cfg(srv, ack_ng_action="bad"), [])
+        ev = [e for e in ErrorIF.drain_events() if e.get("phase") == "startup"]
+        self.assertEqual([e["category"] for e in ev], ["config"])
+
+    def test_disconnect_resends_whole_segment_then_next(self):
+        # 2件目の PUT で切断 → 再接続後に1セグメント目を最初の行から送り直し、続けて2セグメント目
+        srv = self.start_server(SocketServer(mode="put_only", close_after_puts=2))
+        before = self._metrics()
+        errors = run_act_socket(act_socket.a_send_seg_trigger, self._cfg(srv),
+                                [make_seg(1, [1.0, 2.0, 3.0]), make_seg(2, [9.0])])
+        self.assertEqual(errors, [])
+        self.assertTrue(srv.wait_puts(6))
+        self.assertEqual([(p["seg_id"], p["seg_ind"]) for p in srv.puts],
+                         [(1, 1), (1, 2), (1, 1), (1, 2), (1, 3), (2, 1)])   # seg_id / seg_ind で重複を見分けられる
+        self.assertEqual(self._delta(before, "total_resent_segments"), 1)
+        self.assertEqual(self._delta(before, "total_sent_segments"), 2)
+        self.assertEqual(self._delta(before, "total_dropped_segments"), 0)
+
+    def test_disconnect_resend_in_background_with_skip_on_offline(self):
+        # skip_on_offline=true でも、キューが空のときの再接続で再送待ちを送る
+        srv = self.start_server(SocketServer(mode="put_only", close_after_puts=1))
+        errors = run_act_socket(act_socket.a_send_seg_trigger, self._cfg(srv, skip_on_offline=True),
+                                [make_seg(1, [1.0, 2.0])], wait_after_sec=2.5)
+        self.assertEqual(errors, [])
+        self.assertTrue(srv.wait_puts(3))
+        self.assertEqual([(p["seg_id"], p["seg_ind"]) for p in srv.puts], [(1, 1), (1, 1), (1, 2)])
+
+    def test_resend_limit_exceeded_drops_and_continues(self):
+        # 初回・1回目・2回目の送り直しとも切断 → resend_max=2 で破棄し、次のセグメントは送る
+        srv = self.start_server(SocketServer(mode="put_only", close_after_puts=[1, 2, 3]))
+        before = self._metrics()
+        errors = run_act_socket(act_socket.a_send_seg_trigger, self._cfg(srv, resend_max=2),
+                                [make_seg(1, [1.0, 2.0]), make_seg(2, [9.0])])
+        self.assertEqual(errors, [])
+        self.assertTrue(srv.wait_puts(4))
+        self.assertEqual([(p["seg_id"], p["seg_ind"]) for p in srv.puts], [(1, 1), (1, 1), (1, 1), (2, 1)])
+        self.assertEqual(self._delta(before, "total_resent_segments"), 2)
+        self.assertEqual(self._delta(before, "total_dropped_segments"), 1)
+        ev = [e for e in ErrorIF.drain_events() if e.get("exc_type") == "ResendLimitExceeded"]
+        self.assertEqual(len(ev), 1)
+
+    def test_resend_max_zero_drops_without_resend(self):
+        srv = self.start_server(SocketServer(mode="put_only", close_after_puts=1))
+        before = self._metrics()
+        errors = run_act_socket(act_socket.a_send_seg_trigger, self._cfg(srv, resend_max=0),
+                                [make_seg(1, [1.0, 2.0]), make_seg(2, [9.0])])
+        self.assertEqual(errors, [])
+        self.assertTrue(srv.wait_puts(2))
+        self.assertEqual([(p["seg_id"], p["seg_ind"]) for p in srv.puts], [(1, 1), (2, 1)])   # 従来どおり送り直さない
+        self.assertEqual(self._delta(before, "total_resent_segments"), 0)
+        self.assertEqual(self._delta(before, "total_dropped_segments"), 1)
+
+    def test_stats_mode_resends_after_disconnect(self):
+        srv = self.start_server(SocketServer(mode="put_only", close_after_puts=1))
+        cfg = self._cfg(srv, save_dir=self.tmp,
+                        column_register_map={"0": [2, "mean"], "1": [-1, "seg_len"]},
+                        out_coldef={"0": ["val_mean", "float", "num", "obj", ""], "1": ["rows", "int", "num", "exp", ""]})
+        errors = run_act_socket(act_socket.a_send_stats_trigger, cfg, [make_seg(7, [1.0, 3.0])])
+        self.assertEqual(errors, [])
+        self.assertTrue(srv.wait_puts(2))
+        self.assertEqual([(p["seg_id"], p["val_mean"], p["rows"]) for p in srv.puts], [(7, 2.0, 2), (7, 2.0, 2)])
 
 
 if __name__ == "__main__":

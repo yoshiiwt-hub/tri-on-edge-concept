@@ -4,36 +4,17 @@
 """
 ########################################
 # SPC Rules Calculation Functions
-# Ver: 01.b.20261001    By: IWATA, Y.'s Agent AI
-# Mod: モジュール名を tri_edge_XX_* から tri_sXX_* 形式に変更（tri_edge_19_calc_spc → tri_s19_calc_spc）
+# Ver: 01.c.20261102    By: IWATA, Y.'s Agent AI
+# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
 ########################################
-compile_spc_rules  # spc_rules設定を検証・コンパイルして判定関数リストを返す
-check_spc          # コンパイル済みルールリストに基づき、1セグメント分の値列を判定する
+セグメント内の値の並びを、SPC の異常判定ルール（Nelson ルールの一般化）で判定する
 
-動作概要
-    1. compile_spc_rules() で spc_rules（設定のリスト）を検証し、
-       [(rule_label, func(values, center, sigma) -> List[int])] のリストを生成する
-    2. check_spc() は、セグメント内の値列（1列分）に対して全ルールを適用し、
-       {rule_label: [違反した点のインデックスのリスト]} を返す
-    3. 対応ルール
-        "trend"    : n点連続で上昇/下降（Nelsonルール3の一般化）
-        "zone_out" : m点中n_out点以上が center±(sigma_level*sigma) を同じ側で超える
-                     （Nelsonルール5/6の一般化。sigma_level=2,m=3,n_out=2 でルール5、
-                       sigma_level=1,m=5,n_out=4 でルール6に相当）
-    4. center・sigma は本モジュールでは計算しない（呼び出し側が固定値、または別途学習した値を渡す）
+主要関数:
+compile_spc_rules  # spc_rules の設定を検証し、判定関数のリストにする（起動時に1回）。
+check_spc          # 1セグメント分の値の並びに全ルールを適用し、違反した点の位置を返す。
 
-    ※ pandas/numpyは使用しない（TriEdgeのexeレイヤー軽量化方針に合わせ、標準ライブラリのみで実装）
-    ※ ルールを追加する場合は _RULE_FUNCS とその判定関数、compile_spc_rules の分岐を追加するだけでよい
-
-spc_rules フォーマット（リスト。各要素が1つのルール）
-    {"method": "trend", "n": 6, "direction": "up"}
-        n           : 連続点数（2以上）
-        direction   : "up"（上昇のみ）| "down"（下降のみ）| "both"（両方、デフォルト）
-    {"method": "zone_out", "m": 3, "n_out": 2, "sigma_level": 2}
-        m           : 判定に使うウィンドウの点数
-        n_out       : mのうち、閾値超えとみなす最小点数（同じ側のみでカウント）
-        sigma_level : 閾値＝center ± sigma_level*sigma
-    "label" キー（省略可）: 結果の識別名。省略時は "{method}_{リスト内のindex}"
+位置づけ: tri_s12_act_diag_spc から呼ばれる。中心値（center）と標準偏差（sigma）は、このモジュールでは求めず、呼び出し側が渡す（固定値、または別途学習した値）。
+設計意図: pandas / numpy を使わず標準ライブラリだけで実装し、exe を軽く保つ。ルールは関数表（_RULE_FUNCS）で切り替え、判定関数と compile_spc_rules の分岐を足すだけで追加できるようにする。
 """
 MODULE_NAME = "Calc_Spc"
 

@@ -4,38 +4,17 @@
 """
 ########################################
 # Extract from Bit/Word (共通モジュール)
-# Ver: 01.c.20261001    By: IWATA, Y.'s Agent AI
-# Mod: モジュール名を tri_edge_XX_* から tri_sXX_* 形式に変更（tri_edge_19_extract_bitword → tri_s19_extract_bitword）
+# Ver: 01.d.20261102    By: IWATA, Y.'s Agent AI
+# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
 ########################################
-compile_column_register_map  # column_register_map をコンパイルしてループ内無辞書参照の関数リストにする
+PLC から読んだ生の Bit / Word データを、設定に従って列の値に変換する共通部品
 
-動作概要
-    find_trigger の column_register_map（sources/unit_dtype/scale形式）を、ループ前に1回だけ
-    クロージャ関数群にコンパイルする。ループ内では [(col_idx, col_func), ...] を
-    for col_idx, col_func in compiled: value = col_func(bulk_buffers) で呼ぶだけになり、
-    辞書参照（dict lookup）が一切発生しない。
+主要関数:
+compile_column_register_map  # column_register_map を、ループ内で直接呼べる変換関数のリストにする（ループ前に1回）。
 
-    [column_register_map フォーマット]
-        "col_idx": {
-            "sources"   : [{"bulk": bulk_id, "offset": 開始位置, "byte": "hi"/"lo"(任意)}, ...],
-            "unit_dtype": "bit"/"int1"/"int1_u"/"str1"/"int2"/"int2_u"/"str2"/"int4"/"int4_u"/"float4",
-            "scale"     : 任意。int系unit_dtypeを10^scaleで割って小数として扱う（例: scale=2 → ÷100）
-        }
-        sourcesの各要素は以下のどちらか：
-            {"bulk": bulk_id, "offset": N, "byte": "hi"/"lo"(任意)}  ← PLCから読んだ生データ
-            {"const": value}                                        ← 固定値（PLCを読まない。文字列/数値どちらも可）
-        - sourcesが1個  → 単一の値（全要素がconstなら、unit_dtype自体省略可）
-        - sourcesが2個以上 → 自動的に連結（str系unit_dtypeは文字列結合、int系unit_dtypeは各値の
-          整数部を文字列化して結合。最終的にintにするかstrのままにするかはcol_defのdtypeが決める）
-          constをsourcesの一部に混ぜて、固定の接頭辞・区切り文字・単位表記などをPLC読出し値と
-          連結し、人間が読みやすい文章を組み立てることもできる
-          （例: [{"const":"規格："}, {源1}, {"const":"以上"}, {源2}, {"const":"未満"}]
-                → "規格：5 以上 6 未満"）
-
-    [int4/int4_u/float4（2word合成）について]
-        2wordの上位/下位並び順はPLCベンダーごとに異なりうるため、このモジュール自体は
-        合成方法を持たない。使用する場合は words_to_int_fn / words_to_float32_fn を
-        呼び出し側（各PLCのcomplinkモジュール）から注入すること。
+位置づけ: PLC 系の Find（SLMP・TOYOPUC）から呼ばれる。機種ごとの通信は、各 PLC の通信モジュールが受け持つ。
+設計意図: 設定の解釈はループ前に済ませ、ループ内では辞書を参照せずに変換関数を呼ぶだけにして、高頻度のポーリングでも処理を軽くする。2ワードの合成方法（上位・下位の並び）は PLC のメーカーで異なるため、このモジュールでは持たず、呼び出し側から関数を渡してもらう。
+前提・制約: int4 / int4_u / float4 を使う場合は、words_to_int_fn / words_to_float32_fn を渡す。column_register_map の書き方は compile_column_register_map を参照。
 """
 MODULE_NAME = "Extract_BitWord"
 
@@ -94,6 +73,24 @@ def compile_column_register_map(
     """
     column_register_map の設定辞書を、ループ内で辞書参照を一切使わずに直接呼べる
     クロージャ関数群にコンパイルする（ループ前に1回だけ呼ぶこと）。
+    ループ内では for col_idx, col_func in compiled: value = col_func(bulk_buffers) で呼ぶ。
+
+    [column_register_map フォーマット]
+        "col_idx": {
+            "sources"   : [{"bulk": bulk_id, "offset": 開始位置, "byte": "hi"/"lo"(任意)}, ...],
+            "unit_dtype": "bit"/"int1"/"int1_u"/"str1"/"int2"/"int2_u"/"str2"/"int4"/"int4_u"/"float4",
+            "scale"     : 任意。int系unit_dtypeを10^scaleで割って小数として扱う（例: scale=2 → ÷100）
+        }
+        sourcesの各要素は以下のどちらか：
+            {"bulk": bulk_id, "offset": N, "byte": "hi"/"lo"(任意)}  ← PLCから読んだ生データ
+            {"const": value}                                        ← 固定値（PLCを読まない。文字列/数値どちらも可）
+        - sourcesが1個  → 単一の値（全要素がconstなら、unit_dtype自体省略可）
+        - sourcesが2個以上 → 自動的に連結（str系unit_dtypeは文字列結合、int系unit_dtypeは各値の
+          整数部を文字列化して結合。最終的にintにするかstrのままにするかはcol_defのdtypeが決める）
+          constをsourcesの一部に混ぜて、固定の接頭辞・区切り文字・単位表記などをPLC読出し値と
+          連結し、人間が読みやすい文章を組み立てることもできる
+          （例: [{"const":"規格："}, {源1}, {"const":"以上"}, {源2}, {"const":"未満"}]
+                → "規格：5 以上 6 未満"）
 
     Args:
         words_to_int_fn     : int4/int4_u 使用時に必要。各PLCのcomplinkモジュールから注入する

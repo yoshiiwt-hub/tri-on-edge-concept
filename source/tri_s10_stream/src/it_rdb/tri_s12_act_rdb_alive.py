@@ -4,43 +4,19 @@
 """
 ########################################
 # TriEdge Act Trigger Module [RDB Alive]
-# Ver: 01.a.20261008    By: IWATA, Y.'s Agent AI
-# Mod: 新規作成（死活監視の結果を PostgreSQL の専用テーブルへ UPSERT し、状態が変わった機器をオンデマンド通知する）
+# Ver: 01.b.20261102    By: IWATA, Y.'s Agent AI
+# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
 ########################################
-a_upsert_alive_to_pg_trigger  # Find Alive（tri_s11_find_alive）の結果を、機器ごとに1行の専用テーブルへ UPSERT する Act Trigger
+機器の死活監視の結果を DB に最新の状態として保ち、状態が変わったら知らせる出口
 
-動作概要
-    1. 起動時、専用テーブルが無ければ作成する（列コメントも登録）
-       既にあれば、列の名前・型と、device_key 単独の主キー／ユニーク制約を確認する（無ければ起動時エラー。ALTER はしない）
-    2. 起動時にテーブルから各機器の前回の状態（status）を読み、以降はメモリに持つ
-    3. セグメント（1周期の全機器）ごとに INSERT ... ON CONFLICT (device_key) DO UPDATE で更新し、1回コミットする
-    4. 状態が変わった機器（OK → NG、NG → OK）があれば、オンデマンド通知（Teams）を要求する
-       前回の状態が無い機器（初回）は NG のときだけ通知する
-    5. 運用系メトリクス（NG 台数・NG の機器・状態変化の回数等）を更新する
-    ※ 履歴は持たない（機器ごとに最新の1行）
+主要関数:
+a_upsert_alive_to_pg_trigger  # tri_s11_find_alive の結果を、機器ごとに1行の専用テーブルへ UPSERT する。
+pg_ensure_alive_table         # 専用テーブルを作成し、既存のテーブルの列と主キーを確かめる（起動時に1回）。
+alive_change_message          # 状態が変わった機器の通知文を作る。
 
-専用テーブル（列は固定）
-    device_key  TEXT PRIMARY KEY  機器の識別子
-    device_name TEXT              機器名
-    status      TEXT              OK / NG
-    checked_at  TIMESTAMP         確認した日時
-    host        TEXT              接続先
-    port        INTEGER           ポート
-    rtt_ms      REAL              接続にかかった時間 ミリ秒（NG のときは NULL）
-    detail      TEXT              判定の詳細
-    updated_at  TIMESTAMP         テーブルを更新した日時
-
-設定（act_trigger）
-    pg_schema         : スキーマ名（デフォルト: "public"）
-    pg_table          : テーブル名（デフォルト: "triedge_device_alive"）
-    pg_reconnect_max  : 再接続の回数（デフォルト: 3）
-    pg_reconnect_wait : 再接続の間隔 秒（デフォルト: 5.0）
-    teams_notify      : 状態が変わったときにオンデマンド通知を要求する（デフォルト: true）
-    notify_time_format: 通知文の日時の書式（デフォルト: "%Y-%m-%d %H:%M:%S"）
-    pg_host 等の接続情報は他の rdb Act と同じ（環境変数で上書き可）
-
-受け取る列（column + segment_header の列名で値を取り出す。device_key・status は必須、ほかは無ければ NULL）
-    device_key, device_name, status, checked_at, host, port, rtt_ms, detail
+位置づけ: tri_s11_find_alive と組み合わせて使う。DB の接続の部品は tri_s19_rdb_postgres を使う。
+設計意図: 履歴は持たず、機器ごとに最新の1行だけを持つ（ダッシュボード等で現在の状態を引きやすくする）。前回の状態は起動時に DB から読んでメモリに持ち、OK と NG が入れ替わったときだけ Teams 等へ通知して、通知が多すぎないようにする。既存のテーブルが想定と違う場合は変更せずに起動時に止め、他の用途のテーブルを壊さない。
+前提・制約: 前回の状態が無い機器（初回）は、NG のときだけ通知する。
 """
 MODULE_NAME = "ACT_RDB_Alive"
 
@@ -366,6 +342,19 @@ def a_upsert_alive_to_pg_trigger(
     """
     Find Alive の結果（1周期 = 1セグメント）を専用テーブルへ UPSERT し、状態が変わった機器をオンデマンド通知する
     Mod: 2026.10.08    By: IWATA, Y.'s Agent AI
+
+    [専用テーブル（列は固定）]（旧モジュール Docstring から移動）
+        device_key  TEXT PRIMARY KEY  機器の識別子
+        device_name TEXT              機器名
+        status      TEXT              OK / NG
+        checked_at  TIMESTAMP         確認した日時
+        host        TEXT              接続先
+        port        INTEGER           ポート
+        rtt_ms      REAL              接続にかかった時間 ミリ秒（NG のときは NULL）
+        detail      TEXT              判定の詳細
+        updated_at  TIMESTAMP         テーブルを更新した日時
+    受け取る列（column + segment_header の列名で取り出す。device_key・status は必須、ほかは無ければ NULL）
+        device_key, device_name, status, checked_at, host, port, rtt_ms, detail
     """
     TRIGGER_NAME = "a_upsert_alive_to_pg_trigger"
 

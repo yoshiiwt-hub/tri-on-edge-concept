@@ -4,34 +4,17 @@
 """
 ########################################
 # Find Trigger Module [Socket]
-# Ver: 06.g.20261001    By: IWATA, Y.'s Agent AI
-# Mod: モジュール名を tri_edge_XX_* から tri_sXX_* 形式に変更（tri_edge_11_find_socket → tri_s11_find_socket）
+# Ver: 06.i.20261102    By: IWATA, Y.'s Agent AI
+# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
 ########################################
-f_socket_client_trigger  # TCPソケットサーバに接続しデータをポーリング取得してキューに送信する Find Trigger
+TCP ソケットサーバーに要求を送り、返ってきた値を取り込む入口
 
-動作概要
-    1. 起動時にソケットサーバへ接続を試みる（失敗時はオフラインモードで待機）
-    2. ループ内でリクエストメッセージを送信しサーバからデータを受信する
-    3. 受信 JSON を col_def の dtype 定義に従いキャストして値リストを作成する
-    4. キャスト済み値を (count, value) タプルとしてキューに投入する
-    5. 接続断時はオフラインモードに移行し reconnect_interval_sec ごとに再接続を試みる
-    6. stop_event が立つまでループを継続し、終了時にソケットをクローズする
+主要関数:
+f_socket_client_trigger  # ソケットサーバーに接続して値を定期的に要求し、キューに流す。
 
-接続設定
-    server_ip              : ソケットサーバの IP アドレス（デフォルト: "127.0.0.1"）
-    server_port            : ソケットサーバのポート番号（デフォルト: 52001）
-    connect_timeout_sec    : 接続タイムアウト秒数（デフォルト: 5）
-    reconnect_interval_sec : 再接続インターバル秒数（デフォルト: 10）
-    polling_ms             : ポーリング間隔ミリ秒（デフォルト: 100）
-    req_msg                : サーバへ送信するリクエスト文字列（デフォルト: "GET"）
-    encode                 : 文字エンコーディング（デフォルト: "utf-8"）
-    sep                    : データ区切り文字（デフォルト: "\\n"）
-    chunk                  : 受信チャンクサイズ バイト（デフォルト: 1024）
-    time_format            : 時刻文字列のパースフォーマット（デフォルト: "%Y-%m-%d %H:%M:%S.%f"）
-    time_default           : 時刻変換失敗時のデフォルト値（デフォルト: "2999-01-01 00:00:00.000000"）
-    int_default            : int 変換失敗時のデフォルト値（デフォルト: -9999）
-    float_default          : float 変換失敗時のデフォルト値（デフォルト: -9999.9）
-    str_default            : str 変換失敗時のデフォルト値（デフォルト: "__"）
+位置づけ: 独自のソケットサーバー（他システムやエージェント）から値を受け取る、汎用のクライアント。
+設計意図: 応答を受け取った直後の時刻を取得時刻としてキューに入れ、StreamCore の受信時刻ではなく実際に値を得た時刻でセグメントを作れるようにする（A-7）。接続が切れてもオフラインで待ち、一定間隔で自動的につなぎ直す。
+前提・制約: サーバーは、要求（req_msg）に対して区切り文字（sep）で終わる JSON を返すこと。
 """
 MODULE_NAME = "FIND_Socket"
 
@@ -262,6 +245,7 @@ def f_socket_client_trigger(
             _res, _rem = recv_until_delimiter(tcp_socket, sep, encode, chunk, _rem)
             if not _res or not _res.strip():
                 raise ConnectionResetError("Server closed connection.")
+            acquired_at = dt.now()  # 取得時刻（応答を受け取った直後。A-7）
             
             # received value
             value = json.loads(_res[:-1])
@@ -278,10 +262,11 @@ def f_socket_client_trigger(
                     "log_file": log_file
                 })
             
-            # 2. Put Queue to StreamCore
+            # 2. Put Queue to StreamCore（3つ目は取得時刻。Core が seg_ts・seg_id に使う。A-7）
             queue_out.put((
                 count,
-                value
+                value,
+                acquired_at
             ))
             
             ## (3. Viz to Debug)

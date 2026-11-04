@@ -4,49 +4,17 @@
 """
 ########################################
 # Find Trigger Module [FTP Server]
-# Ver: 01.e.20261001    By: IWATA, Y.'s Agent AI
-# Mod: モジュール名を tri_edge_XX_* から tri_sXX_* 形式に変更（tri_edge_11_find_ftp → tri_s11_find_ftp）
+# Ver: 01.h.20261102    By: IWATA, Y.'s Agent AI
+# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
 ########################################
-f_find_ftp_trigger  # FTPサーバでファイルを受信し、ファイルパスをキューに流す
+装置が FTP で送ってくるファイルを、エッジ側の FTP サーバーで受け取って取り込む入口
 
-動作概要
-    1. pyftpdlib でFTPサーバを起動（デーモンスレッド）
-    2. クライアントがファイルをアップロード → on_file_received コールバック発火
-    3. 受信ファイルパスを内部キュー経由でメインループへ渡す
-    4. pfx_sfx フィルタ・安定チェック・Ackチェックを経て queue_out に送信
+主要関数:
+f_find_ftp_trigger  # FTP サーバーでファイルを受信し、ファイル情報をキューに流す。
 
-出力列（f_find_file_trigger と同一）
-    0: file_path   (受信ファイルのフルパス)
-    1: dir_path
-    2: dir_base_name
-    3: file_name
-    4: base_name
-    5: ext
-    6: size_kb
-    7: updated_time
-    8: yyyymmdd
-    9: yyyy
-    10: mm
-    11: dd
-    12: hh
-
-pfx_sfx フィルタ
-    [[接頭語リスト], [接尾語リスト]]  空リスト = フィルタなし
-
-stable_check
-    stable_check_n: 0 = スキップ, 1以上 = 1秒間隔でn回チェック
-
-ack制御
-    check_ack   : true → ackファイルが存在する場合のみ処理を実行
-    ack_file_ext: ackファイルの拡張子（例: "done"）
-
-接続設定
-    ftp_host    : FTPサーバのホスト名またはIPアドレス（環境変数 FTP_HOST）
-    ftp_port    : FTPサーバのポート番号（環境変数 FTP_PORT）
-    ftp_user    : FTPユーザ名（環境変数 FTP_USER）
-    ftp_pass    : FTPパスワード（環境変数 FTP_PASS）
-    ftp_perm    : FTPパーミッション文字列（デフォルト: "elw"）
-    home_dir    : ファイル受信先ディレクトリ（デフォルト: "work"）
+位置づけ: 送り手が FTP クライアントしか持たない装置の場合に使う。出力列は tri_s11_find_file と同じで、後続の Act（ファイル操作・アップロード等）をそのまま使える。
+設計意図: 受信完了の通知（コールバック）で処理するため、フォルダを監視するより早く確実に検出できる。一時名で受信してから正式名へリネームする送り手にも対応し、リネーム後の名前で条件を判定する。
+前提・制約: 接続情報は環境変数（FTP_HOST / FTP_PORT / FTP_USER / FTP_PASS）で渡す。Linux で 1024 未満のポートを使うには root 権限等が必要。
 """
 MODULE_NAME = "FIND_FTP"
 
@@ -201,8 +169,19 @@ def f_find_ftp_trigger(
         def on_file_received(self, file_path: str) -> None:
             base.metrics_add(MODULE_NAME, "total_received_files", 1)
             base.output_log(MODULE_NAME,
-                f"File received: {file_path}", log_file)
-            _recv_queue.put(file_path)
+                f"File received: {file_path}")                  # 正常は画面のみ
+            _recv_queue.put((file_path, None))
+
+        def ftp_RNTO(self, path: str):
+            res = super().ftp_RNTO(path)     # 成功時のみ (src, dst) を返す（失敗時は 550 応答で None）
+            if res:
+                src_path, dst_path = res
+                if os.path.isfile(dst_path):     # ディレクトリのリネームは対象外
+                    base.metrics_add(MODULE_NAME, "total_renamed_files", 1)
+                    base.output_log(MODULE_NAME,
+                        f"File renamed: {src_path} -> {dst_path}")    # 正常は画面のみ
+                    _recv_queue.put((dst_path, src_path))
+            return res
 
         def on_incomplete_file_received(self, file_path: str) -> None:
             base.metrics_add(MODULE_NAME, "total_incomplete_transfers", 1)
@@ -244,26 +223,37 @@ def f_find_ftp_trigger(
         stop_event.set()
         return None
     
+    def _match_pfx_sfx(path: str) -> Optional[str]:
+        """pfx_sfx フィルタ。該当すれば None、該当しなければ "Prefix" / "Suffix" を返す"""
+        filename_lower = os.path.basename(path).lower()
+        if filter_prefixes and not filename_lower.startswith(filter_prefixes):
+            return "Prefix"
+        if filter_suffixes and not filename_lower.endswith(filter_suffixes):
+            return "Suffix"
+        return None
+
     """======== MAIN LOOP ========"""
     count = 0
     while not stop_event.is_set():
         try:
-            file_path = _recv_queue.get(timeout=1.0)
+            file_path, renamed_from = _recv_queue.get(timeout=1.0)
         except queue.Empty:
             continue
 
         try:
             file_path = str(file_path)
 
-            """pfx_sfxフィルタ"""
-            filename_lower = os.path.basename(file_path).lower()
-            if filter_prefixes and not filename_lower.startswith(filter_prefixes):
+            """リネーム: リネーム前から pfx_sfx に該当していれば受信時に処理済み"""
+            if renamed_from is not None and _match_pfx_sfx(str(renamed_from)) is None:
                 base.output_log(MODULE_NAME,
-                    f"Prefix not matched, skip: {file_path}", log_file)
+                    f"Renamed from matched name (already handled), skip: {file_path}")    # 正常は画面のみ
                 continue
-            if filter_suffixes and not filename_lower.endswith(filter_suffixes):
+
+            """pfx_sfxフィルタ"""
+            unmatched = _match_pfx_sfx(file_path)
+            if unmatched:
                 base.output_log(MODULE_NAME,
-                    f"Suffix not matched, skip: {file_path}", log_file)
+                    f"{unmatched} not matched, skip: {file_path}")    # 正常は画面のみ（.temp 等）
                 continue
 
             """安定チェック"""
@@ -320,7 +310,7 @@ def f_find_ftp_trigger(
                 ]
             ))
             base.output_log(MODULE_NAME,
-                f"Queued #{count}: {file_path}", log_file)
+                f"Queued #{count}: {file_path}")                # 正常は画面のみ（件数は metrics）
             count += 1
 
             """セグメント区切り"""

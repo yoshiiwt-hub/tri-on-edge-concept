@@ -4,93 +4,17 @@
 """
 ########################################
 # Act Trigger Module [FILE HANDLE]
-# Ver: 08.c.20261006    By: IWATA, Y.'s Agent AI
-# Mod: to_dir に数値を指定すると col_def のインデックスとみなし、行ごとにその列の値を出力先フォルダにする
+# Ver: 08.f.20261102    By: IWATA, Y.'s Agent AI
+# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
 ########################################
-a_handle_file_trigger  # 検出したファイルをmove/copy/delete/zip/createする
+Find が検出したファイルを、現場のファイル運用ルールに沿って後始末する Act
 
-動作概要
-    1. キューからセグメントを受信し、各行のファイルパスを取得
-    2. pfx_sfx フィルタでファイル名の接頭語・接尾語を確認
-       ファイルパスは find から渡されたフルパス（絶対パス）のファイルのみを処理する。
-       相対パス・フォルダのパスは処理せず、異常としてログに残す（op="create" は対象外）
-    3. stable_check でファイルが書込み完了済みか確認（サイズ・更新時刻の安定チェック）
-       ※ op="create" の場合、対象は未作成のファイルのためスキップされる
-    4. check_ack=true の場合、ackファイルの存在を確認（op="create" ではスキップ）
-    5. op の指定（move / copy / delete / zip / create）に従いファイルを処理
-    6. to_name プレースホルダを展開してリネームしながら操作（move / copy / zip / create 時）
-    7. 正常は画面表示のみ、異常（見つからない・安定しない・ack なし・失敗）はログファイルにも残し、
-       運用系メトリクスへ報告する（tri_s12_act_comb_rdb_smb と同じ）
-         last_ok_file / total_ok_files / last_ng_file / total_ng_files
-       ※ pfx_sfx で対象外になったファイルは異常として扱わない（画面表示のみ）
-       ※ 同名ファイルがあり上書きしない場合（overwrite=false / create_overwrite=false）はスキップしてログに残す（件数には数えない）
+主要関数:
+a_handle_file_trigger  # 検出したファイルを move / copy / delete / zip / create する。
 
-op
-    "move"   : to_dir へ移動（to_name 指定でリネームも同時に実施。<名前>.tmp に書き込んでからリネーム）
-    "copy"   : to_dir へコピー（to_name 指定でリネームも同時に実施。<名前>.tmp に書き込んでからリネーム）
-    "delete" : ファイルを削除
-    "zip"    : to_dir へ zip 圧縮。to_name 未指定時は
-               "{ファイル名（拡張子除く）}.zip" を使用（<名前>.tmp に書き込んでからリネーム）。
-               zip_delete_src=true で圧縮成功後に元ファイルを削除
-    ※ フォルダは扱わない（フォルダ処理は別の act として検討中。_dev/src/tri_s12_act_dir.py.draft.txt 参照）
-    "create" : to_dir に新規ファイルを作成する。file_path 列の値は実在チェックせず、
-               ファイル名のプレースホルダ展開の元ネタとしてのみ使用する。
-               create_size_bytes（既定0=空ファイル）バイトのファイルを
-               create_fill_byte（既定0x00）で埋めて作成する。
-               既にファイルが存在する場合、create_overwrite=false（既定）ならスキップ
-
-to_name プレースホルダ（省略すると元の名前を維持。zip は既定 "{basename}.zip"）
-    {filename}  : 元のファイル名（拡張子含む）
-    {basename}  : 拡張子なしのファイル名
-    {ext}       : 拡張子（ドット含む。例: .csv）
-    {yyyymmdd}  : 実行時の日付 YYYYMMDD
-    {hhmmss}    : 実行時の時刻 HHMMSS
-    {ts}        : 実行時のタイムスタンプ YYYYMMDD_HHMMSS
-
-stable_check
-    stable_check_n: 0 = スキップ, 1以上 = 1秒間隔でn回チェック（op="create" では常にスキップ）
-
-ack制御
-    check_ack   : true → ackファイルが存在する場合のみ処理を実行（op="create" では常にスキップ）
-    ack_file_ext: ackファイルの拡張子（例: "done" → ファイルパス.done）
-    delete_ack  : true → 処理完了後にackファイルを削除（op="create" では対象外）
-
-pfx_sfx フィルタ（ファイル名の接頭語・接尾語で処理対象を絞り込み）
-    pfx_sfx: [[接頭語リスト], [接尾語リスト]]
-    接頭語リスト: 空リスト [] = フィルタなし  ["data_", "log_"] = いずれかで始まるもの
-    接尾語リスト: 空リスト [] = フィルタなし  [".csv", ".json"] = いずれかで終わるもの
-    例: [[""], [".csv", ".json"]]  →  拡張子 .csv または .json のみ処理
-
-出力先フォルダ（move / copy / zip / create）
-    to_dir: 文字列 → そのフォルダ（相対パスは system_root から）
-            数値   → col_def のインデックス。行ごとに、その列の値を出力先フォルダにする
-                     - 値がファイルパス（末尾の要素に拡張子あり）なら、そのフォルダを使う
-                     - 相対パスは system_root から、絶対パスはそのまま。無いフォルダは作成する
-                     - 値が空・"____" の場合は処理せず異常として記録する（ファイルは元の場所に残る）
-            例: "to_dir": "D:/out" / "to_dir": 7（列7の値 "D:/out/LOT001/a.csv" → D:/out/LOT001 へ）
-
-上書き（move / copy / zip）
-    overwrite: false → 移動先・コピー先・圧縮先に同名ファイルがある場合はスキップ（既定 true = 上書き）
-
-フォルダ構造の再現（move / copy / zip）
-    make_subdir_level: to_dir の下に、元ファイルのフォルダを何階層再現するか（既定 0）。無いフォルダは作成する
-         0 : 再現しない（to_dir 直下にファイルのみ）
-         1 : 元ファイルの親フォルダ        例 C:/in/A/B/x.csv → to_dir/B/x.csv
-         2 : 親々フォルダ/親フォルダ       例 C:/in/A/B/x.csv → to_dir/A/B/x.csv
-        -1 : パスにあるフォルダ全て        例 C:/in/A/B/x.csv → to_dir/in/A/B/x.csv
-       渡されたパスにある範囲のみ（ドライブ・UNC の //server/share は含めない。指定より浅いパスはある分だけ）
-       ※ delete（移動先なし）・create（実ファイルなし）では使わない
-
-delete専用オプション
-    （なし）※ 旧 delete_keep_folder はフォルダ処理の廃止に伴い無視する（設定されていれば起動時に WARN）
-
-zip専用オプション
-    zip_delete_src: true → 圧縮成功後に元のファイルを削除する（既定 false）
-
-create専用オプション
-    create_size_bytes: 作成するファイルのサイズ（バイト数。既定 0 = 空ファイル）
-    create_fill_byte  : ファイルを埋めるバイト値 0-255（既定 0）
-    create_overwrite  : true → 作成先に同名ファイルが既にあっても上書きする（既定 false = スキップ）
+位置づけ: 収集済みファイルの退避・整理・圧縮、送信完了の印となるファイルの作成に使う。
+設計意図: 書き込み途中のファイルや、相手側の書き込み完了前のファイルを処理しないことを最優先とする（書き込みの安定確認・ack ファイルの確認・.tmp に書いてからリネーム）。
+前提・制約: 絶対パスのファイルのみを扱う。フォルダは対象外。
 """
 MODULE_NAME = "ACT_Handle_File"
 
@@ -99,6 +23,7 @@ from   datetime import datetime as dt
 import os
 import queue
 import shutil
+import string
 import sys
 import threading
 import traceback
@@ -172,6 +97,16 @@ def a_handle_file_trigger(
     """
     検出したファイルをmove/copy/delete/zip/createする
     Mod: 2026.10.06    By: IWATA, Y.'s Agent AI（to_dir に数値を指定すると、その列の値を出力先フォルダにする）
+
+    [動作の要点]（旧モジュール Docstring から移動）
+        相対パス・フォルダのパスは処理せず、異常としてログに残す（op="create" は対象外）
+        pfx_sfx で対象外になったファイルは異常として扱わない（画面表示のみ）
+        同名ファイルがあり上書きしない場合（overwrite=false / create_overwrite=false）はスキップしてログに残す（件数には数えない）
+        move / copy / zip は <名前>.tmp に書き込んでからリネームする
+        to_dir に数値を指定した場合、値が空・"____" の行は処理せず異常として記録する（ファイルは元の場所に残る）
+        旧 delete_keep_folder はフォルダ処理の廃止に伴い無視する（設定されていれば起動時に WARN）
+        フォルダの処理は別の Act として検討中（_dev/src/tri_s12_act_dir.py.draft.txt 参照）
+        運用系メトリクス: last_ok_file / total_ok_files / last_ng_file / total_ng_files（正常は画面表示のみ、異常はログファイルにも残す）
     """
     TRIGGER_NAME = "a_handle_file_trigger"
 
@@ -180,13 +115,8 @@ def a_handle_file_trigger(
         n_col_def = len(col_def)
         base.output_log(MODULE_NAME, f"n_col_def={n_col_def}", log_file)
 
-        """ ファイルパス列 """
-        # stream_core が先頭4列（seg_id, seg_ind, seg_ts, 0）を付加するため、
-        # find_trigger の col:0 は act_trigger では col:4 になる
-        file_path_col = int(config.get("file_path_col", 4))
-        if not (0 <= file_path_col < n_col_def):
-            raise ValueError(
-                f"file_path_col={file_path_col} out of range (0-{n_col_def-1})")
+        """ ファイルパス列（Find と同じ列番号で書く。行の中の位置に変換する） """
+        file_path_col = base.resolve_act_col(config.get("file_path_col", 0), col_def, "file_path_col")
 
         """ pfx_sfx フィルタ """
         pfx_sfx_raw = config.get("pfx_sfx", [[], []])
@@ -214,6 +144,7 @@ def a_handle_file_trigger(
 
         to_dir, to_dir_col = utl.parse_dir_setting(config, "to_dir", n_col_def)  # 数値なら列の値を出力先フォルダにする
         to_name = str(config.get("to_name", "")).strip()
+        to_name_cols = _parse_to_name_cols(to_name, col_def)  # {colN} → 行の中の位置
         overwrite = bool(config.get("overwrite", True))
         make_subdir_level = utl.parse_make_subdir_level(config)
 
@@ -244,7 +175,7 @@ def a_handle_file_trigger(
                 f"create_fill_byte must be 0-255. Got: {create_fill_byte}")
 
         base.output_log(MODULE_NAME,
-            f"{TRIGGER_NAME} op={op!r} to_dir={to_dir!r} to_dir_col={to_dir_col} to_name={to_name!r} overwrite={overwrite} make_subdir_level={make_subdir_level} "
+            f"{TRIGGER_NAME} op={op!r} to_dir={to_dir!r} to_dir_col={to_dir_col} to_name={to_name!r} to_name_cols={to_name_cols} overwrite={overwrite} make_subdir_level={make_subdir_level} "
             f"file_path_col={file_path_col} stable_check_n={stable_check_n} "
             f"check_ack={check_ack} ack_file_ext={ack_file_ext!r} delete_ack={delete_ack} "
             f"filter_prefixes={filter_prefixes} filter_suffixes={filter_suffixes} "
@@ -332,7 +263,25 @@ def a_handle_file_trigger(
         os.makedirs(dest, exist_ok=True)
         return dest
 
-    def _render_name(src_path: str) -> str:
+    def _col_values(row: list) -> Dict[str, str]:
+        """
+        to_name の {colN} に差し込む値（その行の列の値を文字列にしたもの）
+        値が空・None、またはファイル名に使えない文字を含む場合は ValueError（呼び出し側で異常として扱う）
+        Mod: 2026.10.25    By: IWATA, Y.'s Agent AI
+        """
+        values = {}
+        for field, pos in to_name_cols.items():
+            val = row[pos]
+            text = "" if val is None else str(val)
+            if not text:
+                raise ValueError(f"to_name {{{field}}} value is empty")
+            bad = [c for c in _INVALID_NAME_CHARS if c in text]
+            if bad:
+                raise ValueError(f"to_name {{{field}}} value {text!r} has invalid characters {bad}")
+            values[field] = text
+        return values
+
+    def _render_name(src_path: str, col_vals: Dict[str, str]) -> str:
         """to_name テンプレートを展開する。to_name が空なら元のファイル名を返す"""
         _, filename = os.path.split(src_path)
         if not to_name:
@@ -346,9 +295,10 @@ def a_handle_file_trigger(
             yyyymmdd = now.strftime("%Y%m%d"),
             hhmmss   = now.strftime("%H%M%S"),
             ts       = now.strftime("%Y%m%d_%H%M%S"),
+            **col_vals,
         )
 
-    def _render_zip_name(src_path: str) -> str:
+    def _render_zip_name(src_path: str, col_vals: Dict[str, str]) -> str:
         """
         zip操作の出力ファイル名を決定する。
         to_name 指定時はそれを展開して使用（拡張子含め自由指定）。
@@ -356,7 +306,7 @@ def a_handle_file_trigger(
         （_render_name をそのまま使うと拡張子が元のまま残ってしまうため専用処理）。
         """
         if to_name:
-            return _render_name(src_path)
+            return _render_name(src_path, col_vals)
         stem, _ = os.path.splitext(os.path.basename(src_path))
         return f"{stem}.zip"
 
@@ -388,6 +338,7 @@ def a_handle_file_trigger(
         """ファイル操作を実行する。成功時 True を返す"""
 
         base_dir = to_dir
+        col_vals: Dict[str, str] = {}
         if op != "delete":
             base_dir = _base_dir(row)
             if base_dir is None:
@@ -395,10 +346,16 @@ def a_handle_file_trigger(
                     f"Destination folder value is empty (to_dir col={to_dir_col}), skip: {src_path}")
                 return False
 
+            try:
+                col_vals = _col_values(row)
+            except ValueError as e:
+                _report_ng(os.path.basename(src_path), f"{e}, skip: {src_path}")
+                return False
+
         if op == "create":
             # create は既存ファイルの検出を前提としない。file_path 列の値は
             # ファイル名プレースホルダ展開の元ネタとしてのみ使用する。
-            dest_name = _render_name(src_path)
+            dest_name = _render_name(src_path, col_vals)
             dest_path = os.path.join(base_dir, dest_name)
             if os.path.exists(dest_path) and not create_overwrite:
                 return _skip_exists(dest_path, "create_overwrite")
@@ -421,7 +378,7 @@ def a_handle_file_trigger(
             _report_ok(src_name, f"Deleted file: {src_path}")
 
         elif op == "zip":
-            dest_name = _render_zip_name(src_path)
+            dest_name = _render_zip_name(src_path, col_vals)
             zip_path  = os.path.join(_dest_dir(src_path, base_dir), dest_name)
             if os.path.exists(zip_path) and not overwrite:
                 return _skip_exists(zip_path, "overwrite")
@@ -442,7 +399,7 @@ def a_handle_file_trigger(
                     f"Deleted source after zip: {src_path}")
 
         elif op == "copy":
-            dest_name = _render_name(src_path)
+            dest_name = _render_name(src_path, col_vals)
             dest_path = os.path.join(_dest_dir(src_path, base_dir), dest_name)
             if os.path.exists(dest_path) and not overwrite:
                 return _skip_exists(dest_path, "overwrite")
@@ -457,7 +414,7 @@ def a_handle_file_trigger(
             _report_ok(dest_name, f"Copied: {src_path} → {dest_path}")
 
         elif op == "move":
-            dest_name = _render_name(src_path)
+            dest_name = _render_name(src_path, col_vals)
             dest_path = os.path.join(_dest_dir(src_path, base_dir), dest_name)
             if os.path.exists(dest_path) and not overwrite:
                 return _skip_exists(dest_path, "overwrite")
@@ -598,6 +555,21 @@ def a_handle_file_trigger(
     """======== LOOP END ========"""
     base.output_log(MODULE_NAME, f"{TRIGGER_NAME} Stop.", log_file)
     return None
+
+_INVALID_NAME_CHARS = '/\\:*?"<>|'  # ファイル名に使えない文字（{colN} の値の確認用）
+
+
+def _parse_to_name_cols(to_name: str, col_def: Dict[int, Any]) -> Dict[str, int]:
+    """
+    to_name から {colN} を取り出し、{"colN": 行の中の位置} を返す（起動時に呼ぶ。列番号が範囲外なら ValueError）
+    Mod: 2026.10.25    By: IWATA, Y.'s Agent AI
+    """
+    cols: Dict[str, int] = {}
+    for _text, field, _spec, _conv in string.Formatter().parse(to_name):
+        if field and field.startswith("col") and field[3:].isdigit():
+            cols[field] = base.resolve_act_col(int(field[3:]), col_def, f"to_name {{{field}}}")
+    return cols
+
 
 a_handle_file_trigger.QMODE = "imq"
 a_handle_file_trigger.CUT_LAST_ROW = True  # 終点行（変化後）を core が除外して渡す

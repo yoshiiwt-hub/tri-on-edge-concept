@@ -4,37 +4,18 @@
 """
 ########################################
 # Act Trigger Module [Tkinter Viz - Value List]
-# Ver: 02.a.20261004    By: IWATA, Y.'s Agent AI
-# Mod: 終点行の除外を各 Act の [:-1] から core へ移し、CUT_LAST_ROW 属性で宣言する形に変更（B-2）
+# Ver: 02.c.20261102    By: IWATA, Y.'s Agent AI
+# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
 ########################################
-a_viz_value_trigger
+最新のセグメントの値を、列ごとに一覧でウィンドウに表示する雛形
 
-動作概要
-    1. 起動時にtkinterウィンドウを1つ作成し、display_cols で指定した列の数だけラベル行を並べる。
-    2. セグメントを受信するたびに、そのセグメントの開始行／最終行の値で各ラベルを更新する。履歴は持たない。
-        ※ dtype（col_defの2番目の要素）に従い表示：
-            "str"  : そのまま文字列化
-            "int"  : 整数に変換して表示
-            "float": 小数点以下4桁で表示
-            "time" : strftimeを持つ値（datetime型）はフォーマットして表示、それ以外はそのまま文字列化
-            上記以外: そのまま文字列化
-            型変換に失敗した場合、または値自体がNoneの場合は "(invalid)" を表示。
-    3. セグメント受信のたびに root.update() でイベントを処理する。mainloop()はキュー受信をブロッキングするため使用しない。
-    4. ウィンドウを閉じられた場合は、停止制御ファイルを作成し、本体（stream_core）にGently Stopを要求
-    5. stop_event が立ったら、ウィンドウを破棄してループを終了
+主要関数:
+a_viz_value_trigger  # 最新のセグメントの指定した列の値を、ウィンドウに一覧で表示する。
+_format_value        # col_def の型に従って、値を表示用の文字列にする。
 
-接続設定
-    display_cols   : 表示対象の列番号のリスト（segment_header + col_defを結合した列番号。省略時は全列を表示）
-    row_select     : セグメントのどの行の値を表示するか。"first"（先頭行）| "last"（末尾行）
-    window_title   : ウィンドウタイトル
-    window_w       : ウィンドウ幅
-    window_h       : ウィンドウ高さ
-    bg_color       : 背景色
-    label_color    : 列名部分の文字色
-    value_color    : 値部分の文字色
-    comment_color  : コメント（col_defの5番目の要素）部分の文字色
-    font_family    : フォント名
-    font_size      : フォントサイズ
+位置づけ: 波形を表示する場合は tri_s12_act_viz_tk_graph を使う。
+設計意図: 履歴は持たず、最新のセグメントの先頭または最後の行だけを表示して、動作を確かめやすくする。tkinter の mainloop() は使わず、セグメントを受け取るたびに画面の更新を処理する。ウィンドウを閉じたら停止ファイルを作り、StreamCore を穏やかに止める。
+前提・制約: GUI を表示できる環境が必要。
 """
 MODULE_NAME = "ACT_Viz_Tkinter_Value"
 
@@ -124,6 +105,9 @@ _DEFAULTS = {
 def _format_value(value: Any, dtype: str) -> str:
     """
     col_def の dtype に従って value を表示用文字列に変換する。
+
+    "str": そのまま文字列 / "int": 整数 / "float": 小数点以下4桁 / "time": datetime なら書式を付けて表示、それ以外はそのまま文字列
+    上記以外の型はそのまま文字列。型変換に失敗した場合、値が None の場合は "(invalid)" を表示する
     """
     if value is None:
         return "(invalid)"
@@ -277,15 +261,9 @@ def a_viz_value_trigger(
 
         display_cols_raw = config.get("display_cols")
         if display_cols_raw:
-            display_cols = [int(c) for c in display_cols_raw]
+            display_cols = base.resolve_act_cols(display_cols_raw, col_def, "display_cols")  # Find と同じ列番号 → 行の中の位置
         else:
             display_cols = list(range(n_col_def))  # 省略時: col_def全列を表示
-
-        for c in display_cols:
-            if not (0 <= c < n_col_def):
-                raise ValueError(
-                    f"display_cols contains out-of-range index {c} "
-                    f"(valid: 0-{n_col_def - 1})。col_def={col_def}")
 
         window_title = str(config.get("window_title", _DEFAULTS["window_title"]))
         window_w     = int(config.get("window_w", _DEFAULTS["window_w"]))

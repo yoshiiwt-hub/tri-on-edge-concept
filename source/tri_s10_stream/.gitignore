@@ -91,8 +91,12 @@
 /_test/*
 !/_test/test_s10_stream_driver.py
 !/_test/test_s10_stream_wave.py
+!/_test/test_s10_stream_stat_judge.py
 !/_test/test_s11_find_driver.py
+!/_test/test_s11_find_ftp.py
 !/_test/test_s12_act_driver.py
+!/_test/test_s12_act_socket_log.py
+!/_test/test_s12_act_tmpl_queue_stats.py
 
 !/_test/sample_server/
 /_test/sample_server/*

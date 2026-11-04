@@ -4,24 +4,19 @@
 """
 ########################################
 # Data Load Module [Guard Band Learning Data]
-# Ver: 01.d.20260930    By: IWATA, Y.'s Agent AI
-# Mod: _00_load_raw() に load_or_create_pickle() によるキャッシュを実装。
-#      CSVセグメント群の読込み（utl.read_segment_csv_dir、ファイル数が多いと重い）の結果を
-#      cache/sin_wave_raw.pickle に保存し、2回目以降はそちらから読む。前処理
-#      （_10_preprocess）はキャッシュ対象に含めず、毎回実行する
-#      （前処理ロジックを直した際に、古いキャッシュのせいで反映されない事故を防ぐため）。
-#      強制的に読み直したい場合は、cache/sin_wave_raw.pickle を削除・退避すること。
+# Ver: 01.e.20261102    By: IWATA, Y.'s Agent AI
+# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
 ########################################
-データを読込み、DataFrameと列定義を返すデータロードモジュール
+Stream が保存したセグメントの CSV を読み、分析・学習に使えるデータと列定義にする（Sin_wave のデータセット）
 
-動作概要
-    1. _00_load_raw()   : 生データを読込む（CSVセグメント群の読込み結果を pickle キャッシュする）
-    2. _10_preprocess() : 前処理（キャッシュ対象外。毎回実行する）
-    3. load_data()      : 公開用データアクセッサ
+主要関数:
+load_wave_data  # 波形のデータ（1セグメント = 複数行）と列定義を返す。
+load_data       # 波形から統計量を求め、統計量のテーブル（1セグメント = 1行）と列定義を返す。
+_00_load_raw    # セグメントの CSV 群を読む（結果を pickle にキャッシュする）。
 
-戻り値
-    df      : pandas.DataFrame
-    col_def : {"0": [name, dtype, num/cat, exp/obj, comment], ...}
+位置づけ: データロードモジュールの1つ。設定の TITLE（Sin_wave）から選ばれ、tri_s20_eda_runner / tri_s20_learn_us_runner に呼ばれる。統計量は tri_s29_calc_stats で求める。
+設計意図: 読込み（重い）はキャッシュし、前処理は毎回実行する。前処理を直したときに、古いキャッシュのせいで反映されない事故を防ぐ。
+前提・制約: 強制的に読み直す場合は、cache/sin_wave_raw.pickle を削除・退避する。戻り値の col_def は {"0": [name, dtype, num/cat, exp/obj, comment], ...}。
 """
 MODULE_NAME = "SinWave"
 

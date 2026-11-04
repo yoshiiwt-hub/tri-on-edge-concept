@@ -4,59 +4,18 @@
 """
 ########################################
 # Guard Band Learning
-# Ver: 03.b.20260930    By: IWATA, Y.'s Agent AI
-# Mod: tri_s20_learn_us_runner.py から呼び出される形に変更。設定ファイル
-#      （tri_edge_21_learn_gb.json）の読込みを廃止し、main(TITLE, df, col_def, config)
-#      として呼ばれる形式に統一（tri_s20_eda_runner.py の visualise() が
-#      呼び出す各モジュールの main() と同じ引数構成）。データ読込みも呼び出し元
-#      （runner）の load() に一本化されたため、本モジュール内では行わない。
+# Ver: 03.c.20261102    By: IWATA, Y.'s Agent AI
+# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
 ########################################
-learn_gb  # runnerから渡された波形データ（load_pp/sin_wave.py の load_wave_data() 等）から
-          # ガードバンドを生成する
+正常な波形の集まりから、波形の各位置で許される上限・下限（ガードバンド）を学習する
 
-動作概要
-    1. main(TITLE, df, col_def, config) が呼び出される
-       （df: 波形データ。1セグメント=複数行。col_def: 対応する列定義）
-    2. df の列名 "seg_ind"（セグメント内の行位置。sin_wave.py の命名）を、
-       以降の集計・プロット関数が前提とする "seg_index" へ改名する
-    3. seg_index ごとに min/max/mean/std（method="mm"）または
-       IQR（method="iqr"）を集計し、ガードバンド（上限・下限）を生成する
-    4. y方向バッファ・x方向バッファ（移動平均的な緩和）・前後端のオフセット（無効化）を適用する
-    5. tri_edge_12_act_gb_diag.py がそのまま読める形式（{title}_GB_Def.csv）で保存する
+主要関数:
+main         # 波形データからガードバンドを作り、CSV に保存する（tri_s20_learn_us_runner から呼ばれる）。
+gen_wave_gb  # 行位置ごとに上限・下限を求め、幅の調整・判定しない区間の指定を適用する。
 
-    ※ 本モジュールは stream_core / TriEdge本体とは独立しており、
-       tri_s20_learn_us_runner.py から呼び出して使う（単体実行は不可）
-    ※ pandas/numpyを使用する（オフラインの学習専用モジュールのため、
-       TriEdge本体（exeレイヤー）の「標準ライブラリのみ」方針の対象外）
-
-config（呼び出し元 runner の LEARN_CONFIG で指定）
-    val_to_judge   : ガードバンド判定対象の列名（df に含まれる数値列名。
-                     例: "Sin" / "Cos" / "Tan"。デフォルト: "Sin"）
-    title          : 出力ファイル名の接頭辞（デフォルト: TITLE）
-    method         : "mm"（min/max/mean/std法, デフォルト） | "iqr"（四分位範囲法）
-    buffer_x       : x方向（seg_index方向）の移動平均バッファ幅（デフォルト: 0）
-    buffer_y       : [下方向バッファ, 上方向バッファ]（デフォルト: [0, 0]）
-    offset_lw      : 下限側の前後端オフセット [前方N点, 後方N点] を無効化（デフォルト: [0, 0]）
-    offset_up      : 上限側の前後端オフセット [前方N点, 後方N点] を無効化（デフォルト: [0, 0]）
-    outdir         : 出力先ディレクトリ（デフォルト: "./output/"）
-    encoding       : 出力CSVのエンコード（デフォルト: "cp932"）
-    save_plot      : ガードバンドの可視化画像（{title}_GB_Plot.png）を保存するか（デフォルト: false）
-                      ※ 判定（診断）結果の可視化ではなく、ガードバンド自体（上限・下限・元波形の重ね描き）の可視化
-    plot_config    : 可視化画像の見た目設定（省略可。tri_edge_12_act_viz.py と同じキー構成）
-        fig_w        : 画像の幅（インチ、デフォルト: 10）
-        fig_h        : 画像の高さ（インチ、デフォルト: 6）
-        fig_dpi      : 解像度（デフォルト: 150）
-        field_color  : 背景色（デフォルト: "w"）
-        edge_color   : 軸・文字・目盛りの色（デフォルト: "k"）
-        line_color   : GB Upper（上限線）の色（デフォルト: "orangered"）
-        line_color_2 : GB Lower（下限線）の色（デフォルト: "royalblue"）
-        mean_color   : 平均線の色（デフォルト: "lime"）
-        wave_color   : 元波形（重ね描き）の色（デフォルト: "gray"）
-        fill_color   : 上限・下限の間の塗りつぶし色（デフォルト: "orange"）
-        fill_alpha   : 塗りつぶしの不透明度（デフォルト: 0.1）
-        wave_alpha   : 元波形の不透明度（デフォルト: 0.25）
-        line_w       : 線幅（デフォルト: 2.0）
-        font_size    : フォントサイズ（デフォルト: 10）
+位置づけ: 出力（{title}_GB_Def.csv）は、Stream の tri_s12_act_diag_gb / tri_s12_act_diag_gb_viz がそのまま読む。
+設計意図: 上限・下限を広げる幅（値の方向・位置の方向）と、波形の端の判定しない区間を設定で調整し、過検出を抑えられるようにする。ガードバンド自体を画像で確かめられるようにする（save_plot）。
+前提・制約: データは波形（1セグメント = 複数行。load_wave_data）。列 seg_ind を seg_index に改名して使う。pandas / numpy を使う（オフラインの学習専用のため、エッジの「標準ライブラリのみ」の方針の対象外）。
 """
 MODULE_NAME = "LEARN_GB"
 

@@ -4,76 +4,18 @@
 """
 ########################################
 # Act Trigger Module [SLMP]
-# Ver: 03.b.20261005    By: IWATA, Y.'s Agent AI
-# Mod: 初回接続の失敗を ErrorIF へ報告（phase=startup / category=comm。A-21）。統計まわりを tri_s10_stream_wave_stat の init_stats / calc_stats に集約（値が出せなかった項目を共通形式でログに出す。B-9）
+# Ver: 03.d.20261102    By: IWATA, Y.'s Agent AI
+# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
 ########################################
-a_slmp_write_trigger  # セグメントデータをSLMPでPLCに書込む
+セグメントの値や統計量を、SLMP で PLC に書き戻す出口
 
-動作概要
-    1. キューからセグメントを受信
-    2. write_mode="stat" の場合、tri_s10_stream_wave_stat でセグメント統計量を算出し、
-       plc_write_map で指定したdevice/labelへそれぞれ書込む
-    3. write_mode="seg" の場合、セグメント全行を1行ずつ書込む（統計計算は行わない）
-    4. 各エントリの target に従い device（デバイス番地）または label（ラベル名）に書込む
-    5. 正常完了後、done_flag を立てる（ハンドシェイク。相手が確認したら落とす想定なので立てたまま）
-    6. 通信失敗時はオフラインモードへ移行し、自動再接続（skip_on_offline=true の場合はスキップ）
-    7. ループ内で例外が発生した場合（comm/data問わず）、error_flag を立てる
-       （ハンドシェイク。同様に立てたまま。comm例外時は接続断済みの可能性が高くベストエフォート）
+主要関数:
+a_slmp_write_trigger  # セグメントの値または統計量を、SLMP で PLC のデバイス・ラベルへ書き込む。
+_plc_write            # 書込みの設定1件に従って PLC に書き込む（ビットは他のビットを壊さない方法で書く）。
 
-    検証時は slmp_server.py（standalone, tri_edge_本体と独立）を起動し、
-    plc_host=127.0.0.1, plc_port=5010 等で接続して動作確認する。
-
-    GT SoftGOT2000のマイコン接続(Ethernet)・形式8/9(QnA互換3Eフレーム)へ接続する場合:
-        - target="label" は使用不可（GT SoftGOT2000の仮想デバイスはD/M/L/R/SM/SDのみ）
-        - network_no / pc_no を GT SoftGOT2000側の[通信設定]（Net No. / PC No.）と一致させること
-        - デバイス点数・範囲の制限あり（例: ワード単位書込み最大244点、D:0-4095 等）
-
-■ write_mode = "stat"（デフォルト）
-    セグメント統計量を tri_s10_stream_wave_stat（CSV保存版 a_save_stats_trigger / TOYOPUC書込み版
-    a_toyopuc_write_trigger と同一仕様）で算出し、plc_write_map で指定したdevice/labelへ書込む
-    column_register_map / out_coldef : 上記モジュールと同一仕様
-        （stat_name: mean min max std count range med iqr sum first last
-                     pertl(p) sig_u sig_l(n_sigma) nth(n) mode n_null seg_len const）
-    plc_write_map フォーマット（out_coldef の出力キー名をそのまま参照）
-        {"out_key": {"target": "device"/"label", "dtype": str, ...(target別の追加キー)}}
-        out_key に対応する統計値が None（no_valid_values等）の場合はその書込みをスキップする
-
-■ write_mode = "seg"
-    セグメント全行を1行ずつ書込む（統計計算は行わない）
-    write_map フォーマット
-        {idx: {"src_col": int, "target": str, "dtype": str, ...}}
-
-■ target / dtype 共通
-    target = "device" : {"device_type": str, "device_no": int}
-    target = "label"  : {"label_name": str, "write_unit": int(word書込み時のみ), "write_len": int}
-    dtype  : "bit"（0/1。deviceはRead-Modify-Write安全書込み、labelはネイティブビット書込み）
-             "word"（符号なし16bit）| "int16"（符号付き16bit）
-             "dword"（符号なし32bit, 2ワード）| "float"（float32, 2ワード）
-
-接続設定
-    plc_host               : PLC の IP アドレス（必須）
-    plc_port               : SLMP ポート番号（デフォルト: 5010）
-    plc_timeout_sec        : 接続・通信タイムアウト秒（デフォルト: 5.0）
-    reconnect_interval_sec : 再接続試行間隔秒（デフォルト: 10.0）
-    skip_on_offline        : オフライン時にセグメントをスキップするか（デフォルト: true）
-    network_no              : 接続先のネットワークNo.（デフォルト: 0x00 = 自局指定）
-                              GT SoftGOT2000等、相手機器側の通信設定に値を合わせる場合に指定する。
-    pc_no                   : 接続先の局番（デフォルト: 0xFF = 自局指定）
-                              GT SoftGOT2000等、相手機器側の通信設定に値を合わせる場合に指定する。
-
-フラグ設定共通フォーマット（done_flag / error_flag で共通。tri_edge_11_find_slmp_bulk_to_rec.py と同一）
-    device指定: {"source": "device", "type_no": [device_type, device_no], "value": ...}
-    label指定 : {"source": "label",  "name_range": [label_name, byte_length], "value": ...}
-                （2要素の場合は unit=1・バイト単位固定。後方互換のデフォルト）
-              : {"source": "label",  "name_range": [label_name, unit, length], "value": ...}
-                （3要素の場合は unit を明示指定できる。0=ビット単位, 1=バイト単位。
-                  ラベルがBit型の場合は unit=0 が必須）
-
-done_flag / error_flag（ハンドシェイク用。どちらも必須。write_mapのdevice/labelとは別に指定する）
-    {name}_flag.source / type_no / name_range : 上記フラグ設定共通フォーマットの通り
-    {name}_flag.value               : 書込む値（デフォルト: 1）
-    ※ 完了フラグ／異常フラグは、書込んだ後こちら側では落とさない
-      （相手側が確認したら相手側で落とすハンドシェイク運用を想定）
+位置づけ: 通信は tri_s19_slmp、統計量の算出は tri_s10_stream_wave_stat を使う。読出しは tri_s11_find_slmp が受け持つ。
+設計意図: 書込みの完了・異常をフラグ（done_flag / error_flag）で PLC に知らせ、PLC 側がフラグを落とすハンドシェイクで確実に受け渡す（こちらからは落とさない）。ビットデバイスへの書込みは読んでから書き戻し（Read-Modify-Write）、同じワードの他のビットを壊さない。
+前提・制約: GT SoftGOT2000 へ接続する場合は、ラベルは使えず、network_no / pc_no を相手の通信設定に合わせる。検証時は slmp_server.py（TriEdge 本体とは独立）を起動して接続する。
 """
 MODULE_NAME = "ACT_SLMP"
 
@@ -336,13 +278,12 @@ def a_slmp_write_trigger(
             if not write_map_raw:
                 raise ValueError("write_mode='seg': write_map is required.")
 
-            write_map = [v for _, v in sorted(write_map_raw.items(), key=lambda x: int(x[0]))]
+            write_map = [dict(v) for _, v in sorted(write_map_raw.items(), key=lambda x: int(x[0]))]
 
             for i, entry in enumerate(write_map):
-                src_col = int(entry.get("src_col", -1))
-                if not (0 <= src_col < n_col_def):
-                    raise ValueError(
-                        f"write_map[{i}] src_col={src_col} out of range (0-{n_col_def-1})")
+                if "src_col" not in entry:
+                    raise ValueError(f"write_map[{i}] src_col is required")
+                entry["src_col"] = base.resolve_act_col(entry["src_col"], col_def, f"write_map[{i}].src_col")  # Find と同じ列番号 → 行の中の位置
                 target = str(entry.get("target", "device")).lower()
                 if target not in ("device", "label"):
                     raise ValueError(f"write_map[{i}] target must be 'device' or 'label'")

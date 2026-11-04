@@ -4,9 +4,18 @@
 """
 ########################################
 # Stats Calculation & Excel Export
-# Ver: 01.b.20260930    By: IWATA, Y.'s Agent AI
-# Mod: 新規作成
+# Ver: 01.c.20261102    By: IWATA, Y.'s Agent AI
+# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
 ########################################
+データの全体像をつかむための統計表（質的・量的の統計量・相関・主成分）を、Excel にまとめる
+
+主要関数:
+main              # 統計量を求め、Excel に保存する（tri_s20_eda_runner の explore から呼ばれる）。
+calc_stats        # 質的変数・量的変数の統計量と相関を求める。
+save_stats_excel  # 統計量をシートに分けて Excel に保存する（相関は色分けする）。
+
+位置づけ: EDA のうち、数値の表で全体像をつかむ部分を受け持つ。グラフは tri_s21_eda_viz_interact / tri_s21_eda_viz_static が受け持つ。
+設計意図: 質的変数・量的変数の区別を col_def の role（category / numetory）から決め、データセットごとに対象の列を指定しなくて済むようにする（key の列は対象外）。
 """
 MODULE_NAME = "Profiler"
 

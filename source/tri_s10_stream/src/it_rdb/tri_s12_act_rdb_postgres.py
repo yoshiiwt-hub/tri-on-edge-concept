@@ -4,9 +4,18 @@
 """
 ########################################
 # TriEdge Act Trigger Module
-# Ver: 07.c.20261007    By: IWATA, Y.'s Agent AI
-# Mod: a_insert_to_pg_trigger に col_custom_value を追加（指定した列に、セグメントの値にかかわらず固定値・現在時刻を入れる）
+# Ver: 07.e.20261102    By: IWATA, Y.'s Agent AI
+# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
 ########################################
+セグメントの値や統計量を、上位 DB（PostgreSQL）のテーブルへ登録する出口
+
+主要関数:
+a_insert_to_pg_trigger      # セグメントの全行を PostgreSQL のテーブルへ INSERT する。
+a_calc_stats_to_pg_trigger  # セグメントの統計量を求め、PostgreSQL のテーブルへ INSERT する。
+
+位置づけ: エッジで集めたデータを上位側の DB に蓄積する。DB の接続・テーブル管理の部品は tri_s19_rdb_postgres、統計量の算出は tri_s10_stream_wave_stat を使う。
+設計意図: 接続時にテーブルを自動で作成し、既存のテーブルとの構成の食い違いを確かめて、配置時の設定ミスを起動時に見つける。登録しない列・JSONB の列・UTC から日本時間に変える列・固定値を入れる列を設定で指定し、DB 側のテーブル設計に合わせられるようにする。接続が切れた場合はつなぎ直す。
+前提・制約: 接続情報は環境変数（PG_HOST / PG_PORT / PG_DB / PG_USER / PG_PASS）で渡す。
 """
 MODULE_NAME = "ACT_RDB"
 
@@ -121,11 +130,14 @@ def a_insert_to_pg_trigger(
     IMQ のセグメントデータを PostgreSQL テーブルへ INSERT する Act Trigger
     - 接続時、テーブル自動作成 + スキーマ整合チェック
     - 接続断時は再接続を試みる
-    - col_custom_value: 指定した列に、セグメントの値にかかわらず固定値・現在時刻を入れる（キーは col_def のインデックス）
+    - hide_col_loc / jsonb_col_loc / utc_to_jst_col_loc: 登録しない列 / jsonb にする列 / UTC→JST 変換する列
+        Find と同じ列番号のリスト。先頭の固定4列は "seg_id" / "seg_ind" / "seg_ts" / "seg_status" の名前で書く
+        （既定: ["seg_ind", "seg_ts", "seg_status"] / [5] / [4]）
+    - col_custom_value: 指定した列に、セグメントの値にかかわらず固定値・現在時刻を入れる（キーは Find と同じ列番号）
         {"<col>": {"src": "const", "value": 値}} / {"<col>": {"src": "now"}} / {"<col>": {"src": "now", "format": "%Y-%m-%d %H:%M:%S"}}
         現在時刻はセグメントごとに1回取得（全行で同じ）。format 省略時は datetime のまま（time 型の列向け）
         UTC→JST 変換の後に上書きする。hide_col_loc に含まれる列・範囲外・src の誤りは起動時エラー
-    Mod: 2026.10.07    By: IWATA, Y.'s Agent AI（col_custom_value を追加）
+    Mod: 2026.10.21    By: IWATA, Y.'s Agent AI（列の指定を Find と同じ列番号に変更）
     """
 
     TRIGGER_NAME = "a_pg_insert_imq_trigger"
@@ -142,9 +154,9 @@ def a_insert_to_pg_trigger(
         base.output_log(MODULE_NAME, f"n_col_def={n_col_def}  col_def={col_def}", log_file)
 
         # (テーブル登録対象を選定、jsonb型変換対象を選定)
-        hide_col_loc = config.get("hide_col_loc", [1, 2, 3])
-        jsonb_col_loc = config.get("jsonb_col_loc", [9])
-        utc_to_jst_col_loc = config.get("utc_to_jst_col_loc", [8])
+        # 列の指定は Find と同じ列番号（先頭の固定4列は "seg_id" 等の名前）。行の中の位置に変換する
+        hide_col_loc, jsonb_col_loc, utc_to_jst_col_loc = rdb.pg_resolve_col_locs(config, col_def)
+        base.output_log(MODULE_NAME, f"hide_col_loc={hide_col_loc}  jsonb_col_loc={jsonb_col_loc}  utc_to_jst_col_loc={utc_to_jst_col_loc}  (行の中の位置)", log_file)
 
         _ind = 0
         col_def_selected = {}
@@ -176,7 +188,7 @@ def a_insert_to_pg_trigger(
         base.output_log(MODULE_NAME, f"jsonb_col_loc_selected: {jsonb_col_loc_selected}", log_file)
         base.output_log(MODULE_NAME, f"utc_to_jst_col_loc_selected: {utc_to_jst_col_loc_selected}", log_file)
 
-        # (指定した列に固定値・現在時刻を入れる。キーは col_def のインデックス、値は登録列の位置に対応付ける)
+        # (指定した列に固定値・現在時刻を入れる。キーは Find と同じ列番号、値は登録列の位置に対応付ける)
         col_custom_map = rdb.pg_parse_col_custom_value(config, col_def, hide_col_loc)
         base.output_log(MODULE_NAME, f"col_custom_value (登録列の位置): {col_custom_map}", log_file)
 

@@ -4,23 +4,19 @@
 """
 ########################################
 # Stream Core Module
-# Ver: 08.b.20261005    By: IWATA, Y.'s Agent AI
-# Mod: import 時の副作用（二重起動確認・停止ファイル削除・設定読込）を main() 冒頭の _prepare_boot へ移動（A-6 / B-6）。QMODE の起動時検証（B-3）。裸の except を修正（C-5）
+# Ver: 08.e.20261102    By: IWATA, Y.'s Agent AI
+# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
 ########################################
+Find（入力）と Act（出力）をつなぎ、データをセグメント単位で受け渡す Stream 領域の中核
 
-動作概要
-    0. main() の冒頭で二重起動の確認・停止ファイルの削除・設定の読込を行う（import しただけでは何もしない。
-       Operator が StreamCore を再起動するたびに設定を読み直す）
-    1. trigger_setting_01.json の col_def / monitor_config / find_config を読み込む
-    2. trigger_setting_02.json の act_config を読み込む
-    3. find_trigger 関数をスレッドで起動し、queue_in（生データキュー）を生成
-    4. メインループで queue_in からデータを受信し、tri_s10_stream_wave_cutout でセグメントを切り出す
-       （開始/終了条件の判定・切り出しは wave_cutout、切り出されたセグメントの送信・STQ・集計は core）
-    5. セグメント完成時に IMQ（In-Memory Queue）または STQ（Storage Queue / SQLite）に送信
-       act_trigger 関数の CUT_LAST_ROW 属性が True なら終点行を除外してから送信する（属性なしは False＝全行）
-       ※ 上限（seg_max_rows / seg_max_sec）による強制クローズのセグメントは終点行が無いため除外しない
-    6. act_trigger 関数をスレッドで起動し、セグメントキューを消費させる
-    7. ハートビートファイルを定期更新し、停止ファイルが現れたらループを終了
+主要関数:
+main                    # 設定を読み込み、Find・Act を起動してストリーム処理を回す（Operator から呼ばれる）。
+_prepare_boot           # 二重起動の確認、停止ファイルの削除、設定の読込みを行う。
+_supervise_error_events # Find・Act スレッドのエラーを監視し、停止・継続を判断する。
+
+位置づけ: Operator が起動・再起動する処理本体。開始・終了の判定と切り出しは wave_cutout に任せ、Core はセグメントの受け渡し（IMQ / STQ）と稼働監視（ハートビート・制御ファイル）に専念する。
+設計意図: Find と Act を別スレッドにしてキューでつなぎ、互いの処理速度や障害が直接影響しないようにする。設定は main() のたびに読み直し、再起動だけで設定変更を反映できるようにする。
+前提・制約: import しただけでは何もしない（処理は main() から始まる）。Find・Act との約束（キューに入れる形、CUT_LAST_ROW 属性）は『新規トリガー開発ガイドライン』を参照。
 """
 MODULE_NAME = "STREAM"
 
@@ -258,6 +254,40 @@ def _worker_wrapper(func, stop_event: threading.Event, trigger_id: str, *args, *
     return None
 
 
+def _unpack_input_item(item: Any) -> Optional[Tuple[int, Any, dt]]:
+    """
+    Find がキューに入れた1件を (index, value, 時刻) にする（A-7）
+      (count, value)           : 時刻は Core の受信時刻 dt.now()（正常。ログ・ErrorIF への報告はしない）
+      (count, value, 取得時刻) : 取得時刻（datetime）を使う。datetime でない場合はデータ異常として報告し、dt.now() で続ける
+      それ以外（要素数の誤り等）: データ異常として報告し、None を返す（呼び出し側でそのレコードを捨てる）
+    Mod: 2026.10.25    By: IWATA, Y.'s Agent AI
+    """
+    if isinstance(item, (tuple, list)) and len(item) == 2:
+        return item[0], item[1], dt.now()
+
+    if isinstance(item, (tuple, list)) and len(item) == 3:
+        if isinstance(item[2], dt):
+            return item[0], item[1], item[2]
+        ErrorIF.report_event({
+            "trigger_id": MODULE_NAME,
+            "phase":      "loop",
+            "category":   "data",
+            "exc_type":   "InvalidFindTimestamp",
+            "message":    f"Find の取得時刻が datetime ではありません。受信時刻で続けます: {type(item[2]).__name__} {item[2]!r:.80}",
+        })
+        return item[0], item[1], dt.now()
+
+    _n = len(item) if isinstance(item, (tuple, list)) else "-"
+    ErrorIF.report_event({
+        "trigger_id": MODULE_NAME,
+        "phase":      "loop",
+        "category":   "data",
+        "exc_type":   "InvalidFindItem",
+        "message":    f"Find からの1件の形が不正です（(count, value) または (count, value, 取得時刻)）。捨てます: type={type(item).__name__} len={_n}",
+    })
+    return None
+
+
 def _check_stop_control_file(stop_file_path: str, stop_detect_count: int) -> int:
     """
     停止制御ファイル検出処理。2回連続検出で KeyboardInterrupt を送出
@@ -354,11 +384,15 @@ def main() -> None:
         col_define_f_keys   = [col_define_f[k][0] for k in sorted(col_define_f.keys())]
         col_define_f_dtypes = [col_define_f[k][1] for k in sorted(col_define_f.keys())]
         
+        # Act に渡る行の先頭の固定4列（列名は base.SEG_HEADER_COLS。Act の設定ではこの名前で指定する）
+        _seg_header_def = {
+              "seg_id"    : ["int" , "key", "key", "Segment ID"]
+            , "seg_ind"   : ["int" , "key", "key", "Segment Row Index"]
+            , "seg_ts"    : ["time", "key", "key", "Timestamp When Data Collected"]
+            , "seg_status": ["int",  "key", "key", "Segment Process Status"]
+        }
         col_define_a_header = {
-              0: ["seg_id"    , "int" , "key", "key", "Segment ID"]
-            , 1: ["seg_ind"   , "int" , "key", "key", "Segment Row Index"]
-            , 2: ["seg_ts"    , "time", "key", "key", "Timestamp When Data Collected"]
-            , 3: ["seg_status", "int",  "key", "key", "Segment Process Status"]
+            i: [name] + _seg_header_def[name] for i, name in enumerate(base.SEG_HEADER_COLS)
         }
         
         col_define_a = {
@@ -643,10 +677,15 @@ def main() -> None:
             """==== QUEUE PROCESSING ===="""
             """ 1. Receive Input Queue """
             try:
+                _item = input_queue.get(timeout=0.1)
+                _unpacked = _unpack_input_item(_item)  # (count, value) / (count, value, 取得時刻)（A-7）
+                if _unpacked is None:
+                    continue  # 形が不正（報告済み）
                 (
-                    index, # Queue Index from Boot
-                    value  # Val (list/tuple)
-                ) = input_queue.get(timeout=0.1)
+                    index,     # Queue Index from Boot
+                    value,     # Val (list/tuple)
+                    timestamp  # 取得時刻（Find が渡した場合）または Core の受信時刻
+                ) = _unpacked
                 #### for debug ####
                 if False:##
                     sys.stdout.write(f'[from find]  index={index}  value={value}\n')#\n\r##
@@ -658,9 +697,8 @@ def main() -> None:
                 continue
 
             """ 2. Format Data Buffer """
-            timestamp = dt.now()
             record = [
-                timestamp,  # TS when Core Received
+                timestamp,  # 取得時刻 or Core の受信時刻。seg_ts・seg_id・seg_max_sec の判定に使う（A-7）
                 index + 1,  # Start in 1
                 list(value) # Val (to list)
             ]

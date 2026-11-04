@@ -4,69 +4,17 @@
 """
 ########################################
 # Find Trigger Module [SLMP]
-# Ver: 02.e.20261005    By: IWATA, Y.'s Agent AI
-# Mod: 初回接続の失敗を ErrorIF へ報告（phase=startup / category=comm。A-21）
+# Ver: 02.f.20261102    By: IWATA, Y.'s Agent AI
+# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
 ########################################
-f_find_slmp_trigger  # PLCデバイス/ラベルを監視し、条件成立時にデータをキューに流す
+MELSEC・キーエンス等の PLC から、SLMP でデバイス・ラベルの値を取り込む入口
 
-動作概要
-    1. SlmpClient で MELSEC PLC に TCP 接続（ポート番号 5010 等）
-    2. flag_mode=True の場合、トリガーフラグ（デバイス or ラベル）を監視し
-       trigger_value と一致した時だけ読出しを許可する（読出し許可ゲート。リセットは行わない）
-    3. flag_mode=False の場合、ポーリングごとに常にデータを取得（連続収集）
-    4. bulk_read で定義したデバイス/ラベルを一括読出しし、生の値のリスト（bulk_buffers）を作る
-    5. column_register_map（src.tri_s19_extract_bitword 仕様）に従って列を組み立て queue_out に送信
-    6. 通信失敗時はオフラインモードへ移行し、自動再接続
+主要関数:
+f_find_slmp_trigger  # PLC のデバイス・ラベルを読み出し、列にしてキューに流す（フラグが立っている間だけ読むこともできる）。
 
-    ※ 波形の開始・終了判定（seg_start/seg_end）はこのモジュールでは行わない。
-       col_def に含めたデータ列を使って stream_core 側（monitor設定）で判定すること。
-
-    検証時は slmp_server.py（standalone, tri_edge_本体と独立）を起動し、
-    plc_host=127.0.0.1, plc_port=5010 等で接続して動作確認する。
-
-bulk_read フォーマット（device読出し・label読出しの両方をここに集約する）
-    device: {"idx": ["device", device_type, device_no, "bit"/"word", count]}
-        count は "word" なら読出しワード数、"bit" なら読出しワード数
-        （ビットデバイスは16点/wordにパックされる仕様のため。count*16が実ビット数）
-    label : {"idx": ["label", label_name, "bit"/"word", count]}
-        count は "word" なら読出しワード数、"bit" なら読出しビット数
-        （ラベル側は"bit"指定でネイティブなBit型ラベルを直接ビット単位読出しできる）
-    例:
-        "0": ["device", "M", 0, "bit",  16]     # M0〜M255（16word=256bit）
-        "1": ["device", "D", 100, "word", 10]   # D100〜D109
-        "2": ["label",  "g_iTest1", "word", 2]  # ラベル、2word分
-        "3": ["label",  "Lbl", "bit", 8]        # ラベル、Bit型8点
-
-column_register_map フォーマット（src.tri_s19_extract_bitword 仕様。TOYOPUC版と共通）
-    "col_idx": {
-        "sources"   : [{"bulk": bulk_id, "offset": N, "byte": "hi"/"lo"(任意)}, ...],
-        "unit_dtype": "bit"/"int1"/"int1_u"/"str1"/"int2"/"int2_u"/"str2"/"int4"/"int4_u"/"float4",
-        "scale"     : 任意。int系unit_dtypeを10^scaleで割って小数として扱う
-    }
-    offset は、"word"系bulkならワード位置、"bit"系bulkならビット位置（0始点）。
-    int4/int4_u/float4（2word合成、下位word+上位wordの順）・const・複数sources連結も
-    TOYOPUC版と全く同じ書式で使える（詳細は src.tri_s19_extract_bitword を参照）。
-
-接続設定
-    plc_host               : PLC の IP アドレス（必須）
-    plc_port               : SLMP ポート番号（デフォルト: 5010）
-    plc_timeout_sec        : 接続・通信タイムアウト秒（デフォルト: 5.0）
-    polling_ms             : ポーリング間隔ミリ秒（デフォルト: 100）
-    reconnect_interval_sec : 再接続試行間隔秒（デフォルト: 10.0）
-
-フラグ設定共通フォーマット（trigger_flag）
-    device指定: {"source": "device", "type_no": [device_type, device_no], "trigger_value": ...}
-    label指定 : {"source": "label",  "name_range": [label_name, byte_length], "trigger_value": ...}
-                （2要素の場合は unit=1・バイト単位固定。後方互換のデフォルト）
-              : {"source": "label",  "name_range": [label_name, unit, length], "trigger_value": ...}
-                （3要素の場合は unit を明示指定できる。0=ビット単位, 1=バイト単位。
-                  ラベルがBit型の場合は unit=0 が必須）
-
-トリガーフラグ設定（読出し許可ゲートのみ。リセットは行わない）
-    flag_mode    : フラグ監視モード（デフォルト: true）
-    trigger_flag : flag_mode=True の場合は必須。上記フラグ設定共通フォーマットの通り
-                   trigger_flag.trigger_value : トリガー比較値（デフォルト: 1）。
-                   この値と一致する間だけ読出しを許可する
+位置づけ: 通信は tri_s19_slmp、生データから列への変換は tri_s19_extract_bitword を使う。書込みは tri_s12_act_slmp が受け持つ。
+設計意図: 読み出す範囲（bulk_read）と列への割り当て（column_register_map）を分け、まとめて読んでから列に振り分けることで、要求の回数を減らす。フラグを監視するモードでは、読出しを許可するだけでフラグは戻さず、PLC 側の制御に干渉しない。
+前提・制約: 波形の開始・終了の判定はこのモジュールでは行わない（StreamCore の monitor 設定で判定する）。検証時は slmp_server.py（TriEdge 本体とは独立）を起動して接続する。
 """
 MODULE_NAME = "FIND_SLMP"
 

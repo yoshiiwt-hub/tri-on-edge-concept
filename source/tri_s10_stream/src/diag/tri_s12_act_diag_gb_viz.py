@@ -4,67 +4,18 @@
 """
 ########################################
 # Act Trigger Module [Guard Band Diagnosis - Visualization Demo]
-# Ver: 02.a.20261004    By: IWATA, Y.'s Agent AI
-# Mod: 終点行の除外を各 Act の [:-1] から core へ移し、CUT_LAST_ROW 属性で宣言する形に変更（B-2）
+# Ver: 02.c.20261102    By: IWATA, Y.'s Agent AI
+# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
 ########################################
-a_gb_diag_viz_trigger  # 波形データを事前学習済みガードバンドと比較し、判定結果を画像で保存するデモ用 Act Trigger
+ガードバンドによる判定の結果を、画像で確かめるためのデモ
 
-動作概要
-    1. 起動時に models（複数モデルの定義）を全て検証・コンパイルする
-       （モデルごとのガードバンド定義CSVを事前に読込んでおく。実行中の都度読込みはしない）
-    2. ループ内でキューからセグメントを受信し項目数の整合性を確認する
-    3. セグメントの終点行（変化後）を除外してから判定する
-    4. model_select_col_idx の値で使用するモデルを選択する
-       （model_val_mapで値→モデルキーのn対1対応。該当モデルが無ければdefault_modelにフォールバック。
-       それも無ければ判定をスキップする）
-    5. セグメント内の各行（位置＝seg_index相当）について、選択したモデルのtarget_col_idxの値を
-       ガードバンド定義の上限・下限と比較し、異常点を判定する
-    6. 波形（実測値の折れ線）・ガードバンド上限/下限・逸脱した点への×印を1枚の画像に描画して保存する
-       （1セグメント=1画像）
-    7. stop_event が立ちキューが空になった時点でループを終了する
+主要関数:
+a_gb_diag_viz_trigger  # 波形をガードバンドと比べ、波形・ガードバンド・外れた点を1枚の画像に描いて保存する。
+_plot_diag             # 判定結果を画像にする（matplotlib を使用）。
 
-    ※ 本トリガーは「判定結果を画像として見る」デモ用であり、CSV保存は行わない
-      （CSV保存が必要な場合は tri_edge_12_act_gb_diag.py を使用すること）
-    ※ pandas/numpyは直接使用しない（matplotlibの内部依存を除き、標準ライブラリのみで実装）
-
-ガードバンド定義CSV（gb_def_csv）のフォーマット
-    tri_edge_12_act_gb_diag.py / learn_gb.py と共通。
-    必須列: seg_index列（デフォルト列名 "seg_index"）、
-            下限列（{gb_col_name}_GB_Lw）、上限列（{gb_col_name}_GB_Up）
-
-接続設定
-    save_dir             : 画像保存先ディレクトリ（system_root からの相対パス、デフォルト: "output"）
-    file_pfx              : 画像ファイル名のプレフィックス（デフォルト: "gbdiag_viz"）
-    encode                 : ガードバンド定義CSV読込みの文字エンコーディング（デフォルト: "utf-8"）
-
-    model_select_col_idx  : モデル選択に使う列のインデックス（必須。品番・設備状態等が入る列）
-    model_val_map          : 値 → モデルキー のn対1対応（必須）
-                              {"モデルキー": ["値1", "値2", ...], ...}
-    models                 : モデル定義の辞書（必須。1つ以上）
-                              {"モデルキー": {
-                                  "target_col_idx": ...,
-                                  "gb_def_csv": ...,
-                                  "gb_col_name": ...,
-                                  "gb_seg_index_col": ...（省略可、デフォルト"seg_index"）
-                              }, ...}
-    default_model          : model_select_col_idx の値がどのモデルにも一致しない場合に
-                              フォールバックするモデルキー（省略可）。
-                              省略時、該当モデルが無いセグメントは判定をスキップする（警告ログ出力）
-
-    plot_config           : 画像の見た目設定（省略可。tri_s12_act_viz.py / learn_gb.py と同じ考え方）
-        fig_w               : 画像の幅（インチ、デフォルト: 10）
-        fig_h               : 画像の高さ（インチ、デフォルト: 6）
-        fig_dpi             : 解像度（デフォルト: 150）
-        field_color         : 背景色（デフォルト: "w"）
-        edge_color          : 軸・文字・目盛りの色（デフォルト: "k"）
-        line_color          : 実測値の線の色（デフォルト: "darkorange"）
-        line_color_2        : ガードバンド上限・下限の線の色（デフォルト: "royalblue"）
-        fill_color          : 上限・下限の間の塗りつぶし色（デフォルト: "royalblue"）
-        fill_alpha          : 塗りつぶしの不透明度（デフォルト: 0.08）
-        mark_color          : 逸脱点の×印の色（デフォルト: "red"）
-        mark_size           : 逸脱点の×印の大きさ（デフォルト: 100）
-        line_w              : 線幅（デフォルト: 2.0）
-        font_size           : フォントサイズ（デフォルト: 10）
+位置づけ: 判定の仕組みは tri_s12_act_diag_gb と同じで、結果を CSV ではなく画像で残す。判定の設定を調整するとき、結果を目で確かめるために使う。
+設計意図: 品番などの値とモデルを n 対 1 で対応付け（model_val_map）、同じガードバンドを使う品番をまとめて指定できるようにする。
+前提・制約: CSV は保存しない（判定結果の記録には tri_s12_act_diag_gb を使う）。matplotlib が必要。
 """
 MODULE_NAME = "ACT_GB_Diag_Viz"
 
@@ -308,9 +259,7 @@ def a_gb_diag_viz_trigger(
         model_select_col_idx = config.get("model_select_col_idx")
         if model_select_col_idx is None:
             raise ValueError("model_select_col_idx is required")
-        model_select_col_idx = int(model_select_col_idx)
-        if not (0 <= model_select_col_idx < n_col_def):
-            raise ValueError(f"model_select_col_idx={model_select_col_idx} out of range (0-{n_col_def-1})")
+        model_select_col_idx = base.resolve_act_col(model_select_col_idx, col_def, "model_select_col_idx")  # Find と同じ列番号
 
         models_cfg = config.get("models")
         if not models_cfg:
@@ -343,9 +292,7 @@ def a_gb_diag_viz_trigger(
             _target_col_idx = model_cfg.get("target_col_idx")
             if _target_col_idx is None:
                 raise ValueError(f"models[{model_key!r}].target_col_idx is required")
-            _target_col_idx = int(_target_col_idx)
-            if not (0 <= _target_col_idx < n_col_def):
-                raise ValueError(f"models[{model_key!r}].target_col_idx={_target_col_idx} out of range (0-{n_col_def-1})")
+            _target_col_idx = base.resolve_act_col(_target_col_idx, col_def, f"models[{model_key!r}].target_col_idx")  # Find と同じ列番号
 
             """ガードバンド定義CSVの読込み（標準csvモジュールのみ。pandas不使用）"""
             _gb_def_csv = model_cfg.get("gb_def_csv")

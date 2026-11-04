@@ -1,51 +1,82 @@
 {
     "##_about": "tri_s20_setting.json のサンプル。コピーして tri_s20_setting.json にリネームして使用する",
+    "##_about_2": "tri_s20_eda_runner.py（EDA）と tri_s20_learn_us_runner.py（学習）が、このファイルを読み込む",
+    "##_about_3": "キー名が ## で始まる項目は説明（コメント）。どの処理も読まない。省略できる項目は「##キー名」の形で省略時の値を例示している",
 
-    "## TITLE"  : "解析対象データセット名。LOAD_MODULE はこの値の lower() で自動決定される",
+    "## TITLE"  : "解析対象データセット名。LOAD_MODULE はこの値の lower() で自動決定される（load_pp/<lower()>.py を読む。例: Sin_wave → load_pp/sin_wave.py）",
+    "## TITLE_2": "出力ファイル名の接頭辞にも使う（例: {TITLE}_ColDef.json）",
     "TITLE"     : "Sin_wave",
 
-    "## OUTDIR" : "出力先ディレクトリ。相対パスは本ファイルの場所を基点に解決。絶対パスも可",
+    "## OUTDIR" : "出力先ディレクトリ。相対パスは本ファイルの場所を基点に解決。絶対パスも可。無ければ作成する",
+    "## OUTDIR_2": "学習（learn）の出力先にも、この値が使われる（learn_gb / learn_mt の outdir は、この値で上書きされる）",
     "OUTDIR"    : "./output/",
 
+    "## eda" : "---- EDA（tri_s20_eda_runner.py）の設定 ----",
     "eda": {
-        "## IS_WAVE"       : "true=波形データモード（load_wave_data + overlap可視化）  false=統計量モード",
+        "## IS_WAVE"       : "true=波形データモード（load_wave_data で読み、波形の重ね合わせ（overlap）だけを描く。graph_to_viz は使わない）",
+        "## IS_WAVE_2"     : "false=統計量（表）データモード（load_data で読み、統計量の Excel 出力（tri_s21_eda_profiler）と graph_to_viz のグラフを作る）",
         "IS_WAVE"          : true,
 
-        "## INTERACT_MODE" : "offline=ブラウザ表示なし  online=インタラクティブ表示",
+        "## INTERACT_MODE" : "offline=ブラウザ表示なし（グラフを OUTDIR に HTML で保存）  online=インタラクティブ表示（ファイルに保存せず、その場で表示）",
+        "## INTERACT_MODE_2": "online はブラウザ等の表示環境が必要。表示できない環境（サーバー等）では offline を使う。省略時は online",
         "INTERACT_MODE"    : "online",
 
-        "## graph_to_viz"  : "描画グラフ種別（複数指定可）: dist / line / scat",
+        "## graph_to_viz"  : "描画グラフ種別（複数指定可）: dist=箱ひげ・分布 / line=折れ線（傾向）/ scat=散布図（変数間の関係）。省略時は [\"dist\"]",
+        "## graph_to_viz_2": "IS_WAVE=false のときだけ使う。目的変数（col_def の var_type が objective の列）が無いと、正しく描けないグラフがある",
         "graph_to_viz"     : ["dist", "scat"]
     },
 
+    "## learn" : "---- 学習（tri_s20_learn_us_runner.py）の設定 ----",
     "learn": {
-        "## LEARN_MODULE"     : "使用する学習モジュール: tri_s21_learn_us_mt / tri_s21_learn_us_gb",
+        "## LEARN_MODULE"     : "使用する学習モジュール: tri_s21_learn_us_mt（MT 法の単位空間）/ tri_s21_learn_us_gb（ガードバンド）",
         "LEARN_MODULE"        : "tri_s21_learn_us_mt",
 
-        "## LOAD_FUNC"        : "データロード関数: load_data（統計量）/ load_wave_data（波形）",
+        "## LOAD_FUNC"        : "データロード関数: load_data（統計量。1セグメント = 1行）/ load_wave_data（波形。1セグメント = 複数行）",
+        "## LOAD_FUNC_2"      : "learn_us_mt は load_data、learn_us_gb は load_wave_data と組み合わせる",
         "LOAD_FUNC"           : "load_data",
 
-        "## LEARN_CONFIG_KEY" : "LEARN_MODULE に合わせて指定: learn_mt / learn_gb",
+        "## LEARN_CONFIG_KEY" : "LEARN_MODULE に合わせて指定: learn_mt / learn_gb（下のどちらの設定を学習モジュールに渡すか）",
         "LEARN_CONFIG_KEY"    : "learn_mt",
 
         "## learn_gb" : "tri_s21_learn_us_gb 使用時の設定。LEARN_CONFIG_KEY = learn_gb に変更して使う",
+        "## learn_gb_2" : "出力: {title}_GB_Def.csv（Stream の tri_s12_act_diag_gb の gb_def_csv にそのまま使える）、save_plot=true なら {title}_GB_Plot.png",
         "learn_gb": {
+            "## val_to_judge" : "ガードバンドを作る列名（df に含まれる数値の列名。例: Sin / Cos / Tan）。省略時は Sin",
             "val_to_judge" : "Sin",
+            "## title"     : "出力ファイル名の接頭辞。省略時は TITLE",
             "title"        : "GB",
             "## method"    : "外れ値判定方法: mm=min-max / iqr=四分位範囲",
+            "## method_2"  : "セグメント内の行位置（seg_index）ごとに、上限・下限を求める。省略時は mm",
             "method"       : "mm",
+            "## buffer_x"  : "行位置（seg_index）の方向に帯を広げる幅（点数）。その幅（中心）の範囲で、下限は最小・上限は最大をとる（タイミングのずれを許容する）。0=広げない。省略時は 0",
             "buffer_x"     : 0,
+            "## buffer_y"  : "[下方向, 上方向] に上限・下限を広げる量。単位は、学習データの値の全体の幅（最大 − 最小）に対する %（例: [5, 5] = 上下に 5% ずつ）。省略時は [0, 0]",
             "buffer_y"     : [0, 0],
+            "## offset_lw" : "下限を判定しない（無効にする）区間 [先頭から N 点, 末尾から N 点]。波形の立ち上がり・終わり際のばらつきを除く。省略時は [0, 0]",
             "offset_lw"    : [0, 0],
+            "## offset_up" : "上限を判定しない（無効にする）区間 [先頭から N 点, 末尾から N 点]。省略時は [0, 0]",
             "offset_up"    : [0, 0],
+            "## save_plot" : "true=ガードバンド自体（上限・下限・元の波形の重ね描き）の画像を保存する。判定結果の画像ではない。省略時は false",
             "save_plot"    : false,
+            "## encoding"  : "出力 CSV の文字コード。省略時は cp932",
             "encoding"     : "cp932",
-            "plot_config"  : {}
+            "## plot_config" : "save_plot=true のときの画像の見た目（すべて省略可。下は省略時の値）",
+            "plot_config"  : {
+                "##fig_w": 10, "##fig_h": 6, "##fig_dpi": 150,
+                "##field_color": "w", "##edge_color": "k",
+                "##line_color": "orangered", "##line_color_2": "royalblue", "##mean_color": "lime",
+                "##wave_color": "gray", "##fill_color": "orange", "##fill_alpha": 0.1, "##wave_alpha": 0.25,
+                "##line_w": 2.0, "##font_size": 10,
+                "## plot_config": "line_color=上限線 / line_color_2=下限線 / mean_color=平均線 / wave_color=元の波形 / fill_*=上限・下限の間の塗り / wave_alpha=元の波形の不透明度"
+            }
         },
 
         "## learn_mt" : "tri_s21_learn_us_mt 使用時の設定。LEARN_CONFIG_KEY = learn_mt に変更して使う",
+        "## learn_mt_2" : "出力: {title}_unit_space.json（Stream の tri_s12_act_diag_mt の unit_space_json にそのまま使える）",
         "learn_mt": {
+            "## mt_target_col_names" : "単位空間の変数にする列名のリスト（df に含まれる列名。load_data の統計量の列名）。必須",
             "mt_target_col_names" : ["Sin_mean","Sin_std","Sin_med","Sin_min","Sin_max"],
+            "## title" : "出力ファイル名の接頭辞。省略時は TITLE",
             "title"               : "MT"
         }
     }

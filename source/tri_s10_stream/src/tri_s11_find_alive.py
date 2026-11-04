@@ -4,50 +4,18 @@
 """
 ########################################
 # Find Trigger Module [Alive]
-# Ver: 01.a.20261008    By: IWATA, Y.'s Agent AI
-# Mod: 新規作成（機器の死活監視。TCP 接続確認の結果を1機器1行で送る）
+# Ver: 01.b.20261102    By: IWATA, Y.'s Agent AI
+# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
 ########################################
-f_check_alive_trigger  # 設定した機器へ TCP 接続を試み、死活（OK/NG）を1機器1行でキューに送る Find Trigger
+現場の機器が通信できる状態か（死活）を定期的に確かめ、その結果をデータとして取り込む
 
-動作概要
-    1. 起動時に監視対象（targets）を検証する（key は必須・重複不可。誤りは起動時エラー）
-    2. interval_sec ごとに、全機器へ並列（スレッド）で TCP 接続を試みる（ping は使わない）
-    3. 結果を targets の設定順に1機器1行で送り、最後に区切り行（'____'）を送る（1周期 = 1セグメント）
-    4. NG の機器はデータとして送る（ErrorIF へは報告しない。ErrorIF は設定・起動時の誤りのみ）
-    5. stop_event が立つまでループを継続する
+主要関数:
+f_check_alive_trigger  # 設定した機器へ TCP 接続を試み、死活（OK / NG）を1機器1行で送る。
+check_alive            # 1機器の死活を確かめる（NG なら設定の回数まで再試行）。
 
-判定（method = "tcp"。将来 method を追加できるよう設定キーを用意）
-    接続成功                       : OK（detail="connected"）
-    接続拒否（RST）                : refused_is_ok が true なら OK、false なら NG（detail="refused"）
-                                     ※ RST が返る ＝ 機器（OS）は応答している、とみなす
-    タイムアウト・到達不可・名前解決失敗 : NG（detail="timeout" / "unreachable: ..." / "dns_error: ..." 等）
-    NG のときは retry 回まで再試行し、1回でも OK なら OK とする
-
-設定（find_trigger）
-    targets      : 監視対象のリスト（必須）
-                   [{"key": "dev01", "name": "機器１", "host": "192.168.0.10", "port": 502}, ...]
-                     key  : 機器の識別子（必須・重複不可。Act のテーブルの主キーになる）
-                     name : 機器名（省略時は key）
-                     host : IP アドレスまたはホスト名（必須）
-                     port : TCP ポート（省略時は default_port）
-    default_port : targets で port を省略したときのポート（デフォルト: なし ＝ port 必須）
-    method       : 判定方式（デフォルト: "tcp"。現在は "tcp" のみ）
-    interval_sec : 監視周期 秒（デフォルト: 60）。確認に周期より長くかかった場合は、終わり次第つぎの周期を始める
-    timeout_sec  : 1回の接続タイムアウト 秒（デフォルト: 3）
-    retry        : NG のときの再試行回数（デフォルト: 1）
-    refused_is_ok: 接続拒否（RST）を OK とみなすか（デフォルト: true）
-    max_workers  : 並列に確認する機器数の上限（デフォルト: 16）
-    VERBOSE      : 結果をコンソールに表示する（デフォルト: false）
-
-送る列（column の列名で値を割り当てる。並び順は自由。下記以外の列名は起動時エラー）
-    device_key  : str   機器の識別子（targets の key）
-    device_name : str   機器名
-    status      : str   "OK" / "NG"
-    checked_at  : time  確認した日時（機器ごと）
-    host        : str   接続先
-    port        : int   ポート
-    rtt_ms      : float 接続にかかった時間 ミリ秒（NG のときは None）
-    detail      : str   判定の詳細（"connected" / "refused" / "timeout" 等）
+位置づけ: 結果は通常のデータとして Act（RDB 等）に渡し、機器の稼働状況を記録・可視化する。
+設計意図: ping ではなく TCP 接続で確かめ、ICMP が止められているネットワークでも使えるようにする。接続を拒否された（RST が返った）場合は、機器自体は応答しているとみなせるようにする。全機器を並列に確かめ、台数が増えても周期が延びにくいようにする。
+前提・制約: NG はデータとして送り、ErrorIF には報告しない（ErrorIF への報告は設定・起動時の誤りのみ）。
 """
 MODULE_NAME = "FIND_Alive"
 
@@ -269,6 +237,15 @@ def f_check_alive_trigger(
     """
     設定した機器へ TCP 接続を試み、死活（OK/NG）を1機器1行で送る（1周期ごとに区切り行 '____'）
     Mod: 2026.10.08    By: IWATA, Y.'s Agent AI
+
+    [動作の要点]（旧モジュール Docstring から移動）
+        判定（method = "tcp"）:
+            接続成功 → OK（detail="connected"）
+            接続拒否（RST） → refused_is_ok が true なら OK、false なら NG（detail="refused"）
+            タイムアウト・到達不可・名前解決失敗 → NG（detail="timeout" / "unreachable: ..." / "dns_error: ..." 等）
+            NG のときは retry 回まで再試行し、1回でも OK なら OK とする
+        送信: 結果を targets の設定順に1機器1行で送り、最後に区切り行（'____'）を送る（1周期 = 1セグメント）
+              確認に周期より長くかかった場合は、終わり次第つぎの周期を始める
     """
     TRIGGER_NAME = "f_check_alive_trigger"
 

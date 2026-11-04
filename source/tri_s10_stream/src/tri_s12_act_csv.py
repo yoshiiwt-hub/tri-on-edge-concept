@@ -4,40 +4,18 @@
 """
 ########################################
 # Act Trigger Module [CSV Save]
-# Ver: 02.b.20261005    By: IWATA, Y.'s Agent AI
-# Mod: 統計まわりを init_stats / calc_stats / export_out_coldef に集約（出力内容は従来どおり。B-9）。端末情報の抽出は tri_s19_util に集約
+# Ver: 02.c.20261102    By: IWATA, Y.'s Agent AI
+# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
 ########################################
-a_save_seg_trigger    # セグメントの全行を1CSVファイルへ保存する
-a_save_stats_trigger  # セグメントの統計量を算出し、1CSVファイルへ保存する
+セグメントの値や統計量を、CSV ファイルとしてエッジに保存する出口
 
-動作概要
-    1. a_save_seg_trigger   : col_def のままCSVヘッダ（列名/型/role/var_type/コメント）を構成する
-       a_save_stats_trigger : column_register_map / out_coldef から統計量算出定義を初期化する
-    2. ループ内でキューからセグメントを受信し項目数の整合性を確認する
-    3. セグメントの終点行（変化後）は core が除外して渡す（CUT_LAST_ROW = True）
-    4. a_save_seg_trigger   : セグメントの全行をそのままCSVへ書込む（1セグメント=1ファイル）
-       a_save_stats_trigger : build_stats() で統計量を算出し、ヘッダ+1行のCSVへ書込む
-    5. device_key_to_add が指定されている場合は端末情報を付与する
-    6. ack_ext が指定されている場合は CSV 保存後に ACK ファイル（.done 等）を作成する
-    7. stop_event が立ちキューが空になった時点でループを終了する
+主要関数:
+a_save_seg_trigger    # セグメントの全行を、1つの CSV ファイルに保存する。
+a_save_stats_trigger  # セグメントの統計量を求め、ヘッダ + 1行の CSV ファイルに保存する。
+_run_save_trigger     # 2つの trigger の共通ループ（保存する内容だけが異なる）。
 
-接続設定（共通）
-    save_dir          : CSV 保存先ディレクトリ（system_root からの相対パス、デフォルト: "output"）
-    encode            : CSV ファイルの文字エンコーディング（デフォルト: "utf-8"）
-    file_pfx          : CSV ファイル名プレフィックス（filename_tokens未指定時のみ使用。
-                         デフォルト: a_save_seg_trigger="segments" / a_save_stats_trigger="stats"）
-    ack_ext           : ACK ファイル拡張子（空文字列の場合は作成しない、デフォルト: ""）
-    device_key_to_add : 端末情報から付与するキーのリスト（デフォルト: []）
-    filename_tokens   : ファイル名を組み立てるトークンのリスト（省略可）
-                         使える変数: "$999"（連番、999の次は001）| "$seg_start" | "$seg_end" | "$encode"
-                         それ以外の文字列はリテラルとして扱う。"_" で連結し ".csv" を付与する
-                         （a_save_stats_trigger では $seg_start/$seg_end は stats_dict の
-                         seg_ts_start/seg_ts_end を使用）
-                         省略時は従来通り "{file_pfx}{連番:03}_{seg_id}_{encode}.csv"
-
-a_save_stats_trigger 専用設定
-    column_register_map : 統計量算出用の列マッピング定義（必須）
-    out_coldef           : 統計量の出力列定義（必須）
+位置づけ: 最も基本的な保存先。保存したファイルは Find（tri_s11_find_file 等）で拾って、別の Act（アップロード等）へ渡せる。
+設計意図: CSV のヘッダに列名・型・役割・コメントを含め、後で読む側が列の意味を取り違えないようにする。保存後に ACK ファイルを作れるようにし、受け手が書込み途中のファイルを読まないようにする。
 """
 MODULE_NAME = "ACT_Save_Csv"
 

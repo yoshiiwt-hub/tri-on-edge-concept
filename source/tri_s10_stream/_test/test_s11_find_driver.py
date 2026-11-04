@@ -4,8 +4,8 @@
 """
 ########################################
 # Single Run Test [Find Trigger]
-# Ver: 01.a.20261012    By: IWATA, Y.'s Agent AI
-# Mod: 新規作成（find を単体で動かす。既定は内蔵の設定（demo random）、環境変数・引数で設定ファイルを渡せる）
+# Ver: 01.b.20261025    By: IWATA, Y.'s Agent AI
+# Mod: キューの1件が (count, value, 取得時刻) の find（find_socket 等）にも対応（A-7）
 ########################################
 find（入力）を単体で動かし、キューへレコードが届くことを確かめるテスト
 
@@ -18,6 +18,7 @@ find（入力）を単体で動かし、キューへレコードが届くこと�
     確認すること
       1. find が N 件（N_RECORDS）のレコードをキューへ送ること
       2. 各レコードの列数が、列定義の列数と同じこと
+         （キューの1件は (count, value) か (count, value, 取得時刻)。取得時刻があれば datetime であること）
       3. find のスレッドで未処理の例外が出ず、find が自分で停止していないこと
       4. 起動時のエラー通知（ErrorIF の phase="startup"）が出ていないこと（内蔵の設定では、通知が1件も出ないこと）
 
@@ -135,8 +136,12 @@ class TestFindDriver(unittest.TestCase):
         self.assertFalse(res["self_stopped"], f"find stopped by itself ({label}). events: {events}")
         self.assertEqual([e for e in events if e.get("phase") == "startup"], [], label)
         self.assertGreaterEqual(len(res["records"]), N_RECORDS, f"records: {len(res['records'])} ({label})")
-        for index, value in res["records"]:
+        for item in res["records"]:
+            self.assertIn(len(item), (2, 3), f"item={item}")                 # (count, value) / (count, value, 取得時刻)
+            index, value = item[0], item[1]
             self.assertEqual(len(value), len(self.col_def), f"index={index} value={value}")
+            if len(item) == 3:
+                self.assertIsInstance(item[2], dt, f"index={index} 取得時刻={item[2]!r}")
         if self.setting_path is None:
             self.assertEqual(events, [])                                     # 内蔵の設定では通知は出ない
 
@@ -144,7 +149,8 @@ class TestFindDriver(unittest.TestCase):
         """内蔵の設定（demo random）の値が列の型どおりか（設定を渡したときも、内蔵の設定で確かめる）"""
         res = run_find(resolve_trigger(DEFAULT_FIND), DEFAULT_COL_DEF, DEFAULT_FIND, N_RECORDS, TIMEOUT_SEC)
         self.assertGreaterEqual(len(res["records"]), N_RECORDS)
-        for _, (ts, lot, val, cnt) in res["records"]:
+        for item in res["records"]:
+            ts, lot, val, cnt = item[1]
             self.assertIsInstance(ts, dt)
             self.assertIn(lot, DEFAULT_FIND["str_list"])
             self.assertTrue(0 <= val <= 100)

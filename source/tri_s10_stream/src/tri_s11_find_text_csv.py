@@ -4,88 +4,18 @@
 """
 ########################################
 # Find Trigger Module [Text]
-# Ver: 01.o.20261007    By: IWATA, Y.'s Agent AI
-# Mod: column_source_map・extra_col_def のキーが列番号（数字）でない場合、起動時に原因（閉じ括弧の位置等）が分かるメッセージで止める
+# Ver: 01.p.20261102    By: IWATA, Y.'s Agent AI
+# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
 ########################################
-f_find_text_trigger   # フォルダを監視し、CSV/TSV等のテキストファイルをパースしてキューに流す
+フォルダに置かれた CSV・TSV 等の区切りテキストを読み、行ごとのデータとして取り込む入口
 
-動作概要
-    1. monitor_dir をポーリングし、未処理ファイルを発見したら util.parse_delimited_text でパース
-       - SQLite の seen_files DB で重複処理を防止（tri_s11_find_file.py と同様）
-       - pfx_sfx フィルタ・stable_check に対応
-    2. パース結果（データ行 + extra_col_def の結合レコード）を col_def の dtype に従って型変換し、
-       1行ずつキューへ送信。ファイル末尾でセグメント区切り（'____'）を送信する
-       （1ファイル = 1セグメント。tri_s11_find_file.py の f_read_json_trigger と同様）
-    3. util.parse_delimited_text はファイル不存在・全エンコード失敗時にそのまま例外を投げる（util は
-       ErrorIF に依存しないため）。このトリガー側でその例外を受け止め、ErrorIF.report_exception で
-       報告したうえで、同種エラーが頻発（デフォルト: 60秒に5回）していれば、tri_s11_find_socket.py
-       と同様に一定期間（offline_interval_sec）だけ読み取りをスキップし、期間経過後に自動で読み取りを
-       再開する（オフラインモード）
-    4. 読み取った後、after_read に従ってファイルを削除・移動・リネームする（既定 keep = 残す）
-    5. stop_event が立つまでループを継続
+主要関数:
+f_find_text_trigger  # フォルダを監視し、区切りテキストを読んで1行ずつキューに流す（1ファイル = 1セグメント）。
+_build_col_assign    # col_def の各列に、ファイルのどの値を割り当てるかを決める（起動時に1回）。
 
-出力列
-    col_def の列順に、データ列 + extra_col_def の列（指定していれば）が入る
-    （queue_out.put で送る values の長さ・順序は col_def と完全に一致させること）
-
-接続設定
-    monitor_dir      : 監視対象ディレクトリ（デフォルト: "."）
-    search_subdir    : サブディレクトリを再帰的に検索するか（デフォルト: false）
-    pfx_sfx          : ファイル名フィルタ [[接頭語], [接尾語]]（デフォルト: [[], [".csv"]]）
-    stable_check_n   : 安定チェック回数（デフォルト: 1）
-    interval_sec     : ポーリング間隔秒（デフォルト: 2）
-    delimiter        : 区切り文字（デフォルト: ","。タブ区切りは "\t" を指定）
-    data_start_row   : データ本体の開始行番号・0始点（デフォルト: 0）
-    extra_col_def    : 追加カラム定義（デフォルト: null）。辞書形式で指定する：
-                          {"0": {...}, "27": {...}, ...}
-                        キーは「この要素の値を割り当てる col_def のインデックス」そのもの
-                        （column_source_map のキーと同じ流儀）。そのため column_source_map・
-                        extra_col_def どちらも、JSON上は任意の順序・任意の位置に記載してよい
-                        （col_def の並び順どおりに書く必要はない）。各要素は "src" キーを持つ辞書：
-                          - {"src": "header", "loc": [row_idx, col_idx], "default": 任意}
-                          - {"src": "device", "key": "device_info.jsonのキー", "default": 任意}
-                          - {"src": "const", "default": 任意}
-                          - {"src": "filename", "pos": [開始, 終了], "default": 任意}
-                          - {"src": "filename", "delimiter": 区切り文字, "index": 位置, "default": 任意}
-                          - {"src": "dirname", "rel": 相対階層, "default": 任意}
-                          - {"src": "dirpath", "rel": 相対階層, "default": 任意}
-                        ("loc" はセルの行・列位置、"pos" はファイル名の文字位置範囲。混同しないよう別名にしている。
-                         "dirname.rel" は 0=直近の親ディレクトリ、-1=その1つ上、のように指定する。
-                         "dirpath" は dirname と同じ数え方で、フォルダ名ではなくフォルダのパスを返す。
-                         例 D:/img/LOT1/A/x.txt: rel=0 → D:/img/LOT1/A、rel=-1 → D:/img/LOT1。ルートより上は default。
-                         Act（tri_s12_act_comb_rdb_smb の file_search_dir 等）へ、検索・保存先のフォルダを渡す用途)
-                        "src" が不正等の設定ミスは、起動時に utl.validate_extra_col_def で検知して即停止する
-                        （実行時にたまたま値が取れない場合は、その要素の "default" で継続する。詳細は util 側 docstring 参照）
-    extra_col_default: extra_col_def の各要素に "default" が無い場合に使うデフォルト値（デフォルト: "__"）
-    column_source_map: 列マッピング定義（デフォルト: null）
-                        {col_defのインデックス(文字列): CSV区切り位置(0始点の整数)}
-                        例: {"0": 0, "1": 2}  → col_def[0]にはCSVの0番目の値、col_def[1]には
-                        CSVの2番目の値を割り当てる（間の1番目の値は使わない）
-                        col_def の各インデックスには、次の順で値を割り当てる
-                          - column_source_map・extra_col_def のどちらにも無い → CSVの同じ位置の値（列番号＝区切り位置）
-                          - どちらか一方にある → その設定
-                          - 両方にある → 設定ファイルで後に書いた方（column_source_map と extra_col_def の記載順）
-                        CSVに該当位置の値が無い場合は None（col_def の dtype の既定値）。CSVの余った列は使わない
-                        割当て漏れ・重複は設定どおりとして扱い、エラーにしない。キーが col_def の範囲外の場合のみ起動時エラー
-    encodings        : 読込みを試すエンコード候補（デフォルト: ["utf-8-sig", "cp932", "euc-jp"]）
-    offline_interval_sec: 読込みエラー頻発検知後、次に読み取りを再開するまでの待機秒数（デフォルト: 30）
-    row_range        : 読み取り対象のデータ行範囲（デフォルト: null＝全行読取り）。1始点・両端含む。
-                        [開始行]         : 開始行から最終行まで（例: [10] → 10行目?最終行）
-                        [開始行, 終了行] : 開始行から終了行まで（例: [10, 100] → 10行目?100行目）
-                        ※ data_start_row でスキップした後の「データ本体」の中での行番号
-                          （ヘッダー行等は含まない）。extra_col_defの付与・型変換より前に適用される。
-    time_format / time_default / int_default / float_default / str_default
-                     : dtype cast のフォーマット・デフォルト値（base.set_cast_dtype と同じ）
-    after_read       : 読み取った後の処理（デフォルト: "keep"）
-                          "keep"  : 残す（従来どおり。seen_files は再起動でクリアされるため、再起動後に読み直す）
-                          "delete": 削除する
-                          "move"  : move_to へ移動する（監視フォルダと同じ・search_subdir=true で監視フォルダ配下は起動時エラー）
-                          "rename": rename_pfx_sfx = [接頭語, 接尾語] で名前を変える（接頭語は元の名前の前、接尾語は拡張子の後。
-                                    未指定・空欄の側は付けない）。rename 済みの名前（接頭語で始まり接尾語で終わる）は監視対象から外す
-                        レコードとセグメント区切りを送り、読み取り済みとして記録した後に行う。読み取りに失敗したファイルには行わない
-                        移動先・リネーム先に同名ファイルがある場合は上書きする
-    move_to          : 移動先フォルダ（after_read="move" の場合に必須。system_root からの相対パス可）
-    rename_pfx_sfx   : [接頭語, 接尾語]（after_read="rename" の場合）
+位置づけ: 装置が出力するログ・検査結果などのテキストファイルを取り込む。区切りテキストの読込みと追加列の値の求め方は tri_s19_util（parse_delimited_text / resolve_extra_col_values）を使う。
+設計意図: ファイルの列の並びと col_def の並びを切り離し、割り当て（column_source_map）とファイル名・フォルダ名・端末情報などから作る追加列（extra_col_def）を、設定だけで変えられるようにする。設定の誤りは起動時に止める。読込みの失敗が続く場合は、一定時間読込みを休んでから自動で再開する。
+前提・制約: 読み取った後のファイルは、設定（after_read）に従って残す・削除・移動・リネームする。
 """
 MODULE_NAME = "FIND_Read_Csv"
 
@@ -245,6 +175,12 @@ def f_find_text_trigger(
     """
     CSV/TSV等の区切りテキストファイルを監視し、パースしてキューに流す
     Mod: 2026.10.06    By: IWATA, Y.'s Agent AI（列の割当て: 指定の無い列は列番号＝区切り位置、重複は後勝ち）
+
+    [動作の要点]（旧モジュール Docstring から移動）
+        tri_s19_util.parse_delimited_text はファイル不存在・全エンコード失敗時にそのまま例外を投げる（util は ErrorIF に依存しないため）。
+        このトリガー側で受け止めて ErrorIF.report_exception で報告し、同種エラーが頻発（デフォルト: 60秒に5回）していれば、
+        offline_interval_sec だけ読み取りをスキップし、期間経過後に自動で再開する（オフラインモード）
+        出力列: col_def の列順に、データ列 + extra_col_def の列が入る（送る値の長さ・順序は col_def と完全に一致させる）
     """
     TRIGGER_NAME = "f_find_text_trigger"
 

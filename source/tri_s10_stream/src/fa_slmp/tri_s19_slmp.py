@@ -4,34 +4,20 @@
 """
 ########################################
 # SLMP通信ラッパー関数群
-# Ver: 03.g.20261001    By: IWATA, Y.'s Agent AI
-# Mod: モジュール名を tri_edge_XX_* から tri_sXX_* 形式に変更（tri_edge_19_slmp → tri_s19_slmp）
+# Ver: 03.h.20261102    By: IWATA, Y.'s Agent AI
+# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
 ########################################
-SlmpClient.device_read       # デバイス番地 一括読出し（永続接続）
-SlmpClient.device_write      # デバイス番地 一括書込み（永続接続）
-SlmpClient.device_read_bulk  # デバイス番地 自動分割読出し（960word超え対応）
-SlmpClient.label_read        # ラベル名 読出し（永続接続）
-SlmpClient.label_write       # ラベル名 書込み（永続接続）
-SlmpClient.label_read_bulk   # ラベル名 複数・スリープ付き読出し
-DeviceRead      # デバイス番地 一括読出し（ステートレス）
-DeviceWrite     # デバイス番地 一括書込み（ステートレス）
-DeviceReadBulk  # デバイス番地 自動分割読出し（ステートレス）
-ArrayLabelRead  # ラベル名 読出し（ステートレス）
-ArrayLabelWrite # ラベル名 書込み（ステートレス）
-ArrayLabelReadBulk  # ラベル名 複数読出し（ステートレス）
-decode_float    # ワードリスト → float32 変換
-decode_dword    # ワードリスト → DWord リスト変換
-decode_string   # ワードリスト → ASCII文字列変換
-encode_dword    # DWordリスト → ワードペアリスト変換（書込み用）
-words_to_int    # 2ワード → 1つの整数変換（src.tri_s19_extract_bitword へ注入して使用）
+SLMP（3E フレーム・バイナリ）で MELSEC・キーエンス等の PLC を読み書きする通信部品
 
-動作概要
-    1. SlmpClient（永続接続型）または ステートレス関数で SLMP プロトコルを処理
-    2. デバイス番地読出し・書込み・一括読出し（960word 超え自動分割）をサポート
-    3. ラベル名読出し・書込み・複数ラベル一括読出しをサポート
-    4. float32 / DWord / 文字列 の変換ヘルパー関数を提供
-    5. 検証時は slmp_server.py（standalone, tri_edge_本体と独立）を起動して接続する
-       （旧 USE_FAKE_SLMP フェイク応答モードは廃止）
+主要関数:
+SlmpClient                                                  # 接続を保ったまま読み書きするクライアント（定期ポーリング向け）。
+SlmpClient.device_read_bulk / label_read_bulk               # 1回の要求の上限を超える量を、分割して順に読む。
+DeviceRead / DeviceWrite / ArrayLabelRead / ArrayLabelWrite  # 毎回接続を開閉して読み書きする（単発向け）。
+decode_* / encode_dword / words_to_int                      # ワード列と数値・文字列を相互に変換する。
+
+位置づけ: tri_s11_find_slmp と tri_s12_act_slmp から呼ばれる。words_to_int は tri_s19_extract_bitword に渡して使う。
+設計意図: 定期ポーリングでは接続を保ち、接続の開閉にかかる時間を省く。1回の要求の上限（960 ワード、応答 1920 バイト）を超える読出しは自動で分割し、呼び出し側が上限を意識しなくてよいようにする。
+前提・制約: ラベルの読出しは、1ラベル × 大きな読出し長にするのが速い。検証時は slmp_server.py（TriEdge 本体とは独立）を起動して接続する。
 """
 MODULE_NAME = "SLMP WRAPPER"
 

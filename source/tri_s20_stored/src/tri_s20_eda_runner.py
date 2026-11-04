@@ -4,10 +4,19 @@
 """
 ########################################
 # EDA Runner
-# Ver: 01.e.20260930    By: IWATA, Y.'s Agent AI
-# Mod: __main__ブロックの設定を tri_s20_setting.json から読み込む方式に変更。
-#      _load_setting() / _resolve_outdir() ヘルパー関数を追加。
+# Ver: 01.f.20261102    By: IWATA, Y.'s Agent AI
+# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
 ########################################
+蓄積したデータを読み込み、探索的データ分析（EDA）の統計表とグラフをまとめて作る入口
+
+主要関数:
+load       # load_pp のデータロードモジュールを呼び、データと列定義を得る。
+explore    # 統計量を求めて Excel に出力する（tri_s21_eda_profiler）。
+visualise  # グラフを作る（tri_s21_eda_viz_interact / tri_s21_eda_viz_static）。
+
+位置づけ: Stored 領域の分析の入口。データの読込み・統計・可視化のモジュールを、設定（tri_s20_setting.json）に従って動的に呼び出す。学習の入口は tri_s20_learn_us_runner。
+設計意図: 読込み・統計・可視化を差し替えられる部品に分け、データセットが変わってもデータロードモジュールを1つ追加するだけで同じ分析を回せるようにする。
+前提・制約: 設定は同じフォルダの tri_s20_setting.json から読む（設定項目の説明は同ファイルのコメントを参照）。単体で実行する（__main__）。
 """
 MODULE_NAME = "Eda_Runner"
 

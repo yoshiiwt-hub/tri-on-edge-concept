@@ -4,10 +4,20 @@
 """
 ########################################
 # Stored Common Utility
-# Ver: 01.e.20260930    By: IWATA, Y.'s Agent AI
-# Mod: parquet キャッシュ関数（save_parquet / load_parquet / load_or_create_parquet）を追加。
-#      if __main__ に単体テストを追加。
+# Ver: 01.f.20261102    By: IWATA, Y.'s Agent AI
+# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
 ########################################
+Stored 領域の各モジュールが共通で使う、ファイル読込み・キャッシュ・データ確認の部品集
+
+主要関数:
+read_segment_csv_dir                    # Stream が保存したセグメントの CSV 群を読み、1つの DataFrame にまとめる。
+load_or_create_pickle / load_or_create_parquet  # 重い読込みの結果をファイルに保存し、2回目以降はそこから読む。
+read_csv_all_rows                       # 区切りテキストを、文字コードを順に試しながら読む。
+check_df                                # 列ごとの型・値の範囲・ユニーク数を確かめる。
+log                                     # ログを出力する。
+
+位置づけ: Stream 本体のモジュール（supervise_base・tri_s19_util 等）には依存しない、Stored 用の共通部品。
+設計意図: Stream が保存したセグメントの CSV（5行のヘッダー）をそのまま学習・分析のデータにできるようにする。ファイル数の多い読込みはキャッシュし、分析を繰り返すときの待ち時間を減らす。
 """
 MODULE_NAME = "UTIL"
 
