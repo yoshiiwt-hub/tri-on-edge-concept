@@ -4,8 +4,8 @@
 """
 ########################################
 # Guard Band Learning
-# Ver: 03.c.20261102    By: IWATA, Y.'s Agent AI
-# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
+# Ver: 03.d.20261104    By: IWATA, Y.'s Agent AI
+# Mod: 公開版に向け、非公開・旧名のモジュールへの言及を整理
 ########################################
 正常な波形の集まりから、波形の各位置で許される上限・下限（ガードバンド）を学習する
 
@@ -118,7 +118,7 @@ def _plot_gb(
 ) -> str:
     """
     ガードバンド自体を可視化して画像保存する（matplotlib使用。判定結果の可視化ではない）
-    Mod: 2026.07.17    By: IWATA,Y.（tri_edge_12_act_viz.py と同じ plot_config の考え方を移植。
+    Mod: 2026.07.17    By: IWATA,Y.（Stream の tri_s12_act_viz と同じ plot_config の考え方を移植。
          配色・線幅・フォントサイズ・画像サイズ・解像度を設定ファイルから調整できるようにした）
     上限・下限に加えて、元波形の全セグメントを薄く重ね描きして、
     ガードバンドが実データをどう包んでいるか一目で分かるようにする。
@@ -139,7 +139,7 @@ def _plot_gb(
     line_w       = plot_config.get("line_w"       , 2.0)
     font_size    = plot_config.get("font_size"    , 10)
 
-    # tri_edge_12_act_viz.py と同じ、figure/axes全体の配色スタイル指定
+    # Stream の tri_s12_act_viz と同じ、figure/axes全体の配色スタイル指定
     plt.rc("figure" , fc=field_color, ec=edge_color)
     plt.rc("savefig", fc=field_color, ec=edge_color)
     plt.rc("axes"   , fc=field_color, ec=edge_color, labelcolor=edge_color, titlecolor=edge_color)

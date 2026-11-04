@@ -2,7 +2,7 @@
 # Copyright (c) 2026 IWATA,Yoshitaka
 # https://github.com/yoshiiwt-hub/tri-on-edge-concept
 #################### FIX NOTE (2026.08.09  IWATA,Y.) ##########
-# tri_edge_23_eda_interactive.py 経由での実行時、以下の既存バグを確認・修正した：
+# tri_s21_eda_viz_interact 経由での実行時、以下の既存バグを確認・修正した：
 #  ①gen_interact_linechart() 内 def_button(): y_min_/y_max_ 計算で
 #    d_df['_idx'][[y_+'_ss']]（二重角括弧=DataFrame）に .min()/.max() をかけていたため、
 #    int()変換でSeriesを渡すことになりTypeErrorになっていた。d_df['_idx'][y_+'_ss']
@@ -11,8 +11,8 @@
 """
 ########################################
 # EDA Visualization Library [Interactive]（旧 AnalyzeFunctionsVZ_UI）
-# Ver: 01.a.20261102    By: IWATA, Y.'s Agent AI
-# Mod: 規約の形の Docstring を追加
+# Ver: 01.b.20261104    By: IWATA, Y.'s Agent AI
+# Mod: 公開版に向け、非公開・旧名のモジュールへの言及を整理
 ########################################
 散布図・分布・折れ線・波形の重ね描きを、対話的なグラフ（Plotly）で作る可視化の本体
 

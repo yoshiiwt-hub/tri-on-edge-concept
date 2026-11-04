@@ -5,7 +5,7 @@
 ########################################
 # Single Run Test [Act Trigger: Queue Template - Stats]
 # Ver: 01.b.20261103    By: IWATA, Y.'s Agent AI
-# Mod: 設定例のフォルダ名の変更（_settings_exsamples → _settings_exsamples）に合わせた
+# Mod: 設定例のフォルダ名の変更（_settings_exsamples_mod → _settings_exsamples）に合わせた
 ########################################
 a_template_stats_trigger をスレッドで動かし、セグメントを渡して、
 統計量の計算・オンデマンド通知（運用系メトリクス）・起動時の検証を確かめるテスト

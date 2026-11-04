@@ -4,8 +4,8 @@
 """
 ########################################
 # Find Trigger Module [SLMP]
-# Ver: 02.f.20261102    By: IWATA, Y.'s Agent AI
-# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
+# Ver: 02.g.20261104    By: IWATA, Y.'s Agent AI
+# Mod: 公開版に向け、非公開・旧名のモジュールへの言及を整理
 ########################################
 MELSEC・キーエンス等の PLC から、SLMP でデバイス・ラベルの値を取り込む入口
 
@@ -82,7 +82,7 @@ if __name__ == '__main__':
 
 
 ########################################
-# Flag Config Helper（trigger_flag 用。tri_edge_11_find_slmp_bulk_to_rec.py と同じ形式）
+# Flag Config Helper（trigger_flag 用。tri_s12_act_slmp の done_flag / error_flag と同じ形式）
 ########################################
 
 def _parse_flag_block(block: Dict[str, Any], block_name: str) -> Dict[str, Any]:
@@ -305,7 +305,7 @@ def f_find_slmp_trigger(
             return result["values"][0]
 
     def _responsive_wait(seconds: float) -> None:
-        """stop_event を見ながら細かく待つ（即座に停止へ反応できるように。tri_edge_11_find_citl_mdr_native.py 等と同様）"""
+        """stop_event を見ながら細かく待つ（即座に停止へ反応できるように）"""
         _wait_end = time.time() + seconds
         while time.time() < _wait_end and not stop_event.is_set():
             time.sleep(min(0.05, max(0.0, _wait_end - time.time())))

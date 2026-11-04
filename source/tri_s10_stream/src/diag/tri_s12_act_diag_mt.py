@@ -4,8 +4,8 @@
 """
 ########################################
 # Act Trigger Module [MT-method Diagnosis]
-# Ver: 02.d.20261102    By: IWATA, Y.'s Agent AI
-# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
+# Ver: 02.e.20261104    By: IWATA, Y.'s Agent AI
+# Mod: 公開版に向け、非公開・旧名のモジュールへの言及を整理
 ########################################
 波形の統計量を MT 法（マハラノビス距離）で評価し、正常な状態からの離れ具合で異常を見つける
 
@@ -93,7 +93,7 @@ if __name__ == '__main__':
 
 
 ########################################
-# Stats Helper（tri_edge_12_act_store_stats_sqlite.py と同じ考え方）
+# Stats Helper（tri_s12_act_sqlite の a_store_stats_trigger と同じ考え方）
 ########################################
 _FIXED_STATS_COLS: List[str] = ["seg_id", "seg_ts_start", "seg_ts_end", "seg_rows"]
 

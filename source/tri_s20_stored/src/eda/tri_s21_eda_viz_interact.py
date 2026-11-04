@@ -4,8 +4,8 @@
 """
 ########################################
 # EDA Interactive Visualizer
-# Ver: 01.f.20261102    By: IWATA, Y.'s Agent AI
-# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
+# Ver: 01.g.20261104    By: IWATA, Y.'s Agent AI
+# Mod: 公開版に向け、非公開・旧名のモジュールへの言及を整理
 ########################################
 データの傾向・関係・波形の重なりを、拡大・絞り込みのできる対話的なグラフ（Plotly）で確かめる
 
@@ -44,7 +44,7 @@ def _parse_col_def(
 ) -> Tuple[List[str], Optional[str], List[str], List[str]]:
     """
     col_def を走査し、gen_interact_*() が必要とするパラメータ一式を組み立てる。
-    tri_edge_22_eda_visualizer.py の _parse_col_def() と同じロジック
+    tri_s21_eda_viz_static の _parse_col_def() と同じロジック
     （目的変数の role による target_is 判定は gen_interact_* 側では不要なため省いている）。
     Mod: 2026.08.09    By: IWATA,Y.
 

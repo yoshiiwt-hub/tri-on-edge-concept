@@ -4,8 +4,8 @@
 """
 ########################################
 # Stored Common Utility
-# Ver: 01.f.20261102    By: IWATA, Y.'s Agent AI
-# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
+# Ver: 01.g.20261104    By: IWATA, Y.'s Agent AI
+# Mod: 公開版に向け、非公開・旧名のモジュールへの言及を整理
 ########################################
 Stored 領域の各モジュールが共通で使う、ファイル読込み・キャッシュ・データ確認の部品集
 
@@ -102,7 +102,7 @@ def read_csv_all_rows(
 ) -> Tuple[List[List[str]], str]:
     """
     区切りテキスト(CSV/TSV等)を標準ライブラリのみでセーフティ・エンコード読込みする
-    （tri_edge_00_util.py の parse_delimited_text と同じ考え方。空行は除外する）。
+    （Stream の tri_s19_util の parse_delimited_text と同じ考え方。空行は除外する）。
     base.py に依存しないスタンドアロン実装のため、学習スクリプトから直接呼べる。
 
     戻り値:

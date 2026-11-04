@@ -4,8 +4,8 @@
 """
 ########################################
 # Operator Module
-# Ver: 04.o.20261102    By: IWATA, Y.'s Agent AI
-# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
+# Ver: 04.p.20261104    By: IWATA, Y.'s Agent AI
+# Mod: 公開版に向け、非公開・旧名のモジュールへの言及を整理
 ########################################
 StreamCore を起動・監視し、止まっても自動で再起動して、稼働状況を外部へ知らせる運用役
 
@@ -338,7 +338,7 @@ _webhook_token_cache: Dict[Tuple[str, str], Dict[str, Any]] = {}
 
 # 自己署名証明書環境（社内プロキシによるSSLインスペクション等）向けの、検証スキップ用コンテキスト。
 # 01_operator.json の teams_notification.skip_ssl_verify が true の場合のみ使用する
-# （tri_s19_ms_spo.py の session.verify = False と同じ位置づけの、環境対応オプション）。
+# （requests の verify=False と同じ位置づけの、環境対応オプション）。
 _INSECURE_SSL_CONTEXT = ssl.create_default_context()
 _INSECURE_SSL_CONTEXT.check_hostname = False
 _INSECURE_SSL_CONTEXT.verify_mode = ssl.CERT_NONE

@@ -4,8 +4,8 @@
 """
 ########################################
 # Find Trigger Module [JSON]
-# Ver: 01.g.20261102    By: IWATA, Y.'s Agent AI
-# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
+# Ver: 01.h.20261104    By: IWATA, Y.'s Agent AI
+# Mod: 公開版に向け、非公開・旧名のモジュールへの言及を整理
 ########################################
 フォルダに置かれた JSON ファイルを読み、必要な値を抜き出してレコードとして取り込む入口
 
@@ -228,7 +228,7 @@ def f_read_json_trigger(
         return False
 
     """======== LOOP START ========"""
-    # is_online: ファイル読み取りが正常に行えているか（tri_edge_11_find_read_csv.py と同様）
+    # is_online: ファイル読み取りが正常に行えているか（tri_s11_find_text_csv と同様）
     is_online = True
     last_retry_try = time.time()
     count = 0

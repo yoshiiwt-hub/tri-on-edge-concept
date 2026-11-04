@@ -4,8 +4,8 @@
 """
 ########################################
 # Act Trigger Module [SLMP]
-# Ver: 03.d.20261102    By: IWATA, Y.'s Agent AI
-# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
+# Ver: 03.e.20261104    By: IWATA, Y.'s Agent AI
+# Mod: 公開版に向け、非公開・旧名のモジュールへの言及を整理
 ########################################
 セグメントの値や統計量を、SLMP で PLC に書き戻す出口
 
@@ -84,7 +84,7 @@ if __name__ == '__main__':
 
 
 ########################################
-# Flag Config Helper（done_flag / error_flag 用。tri_edge_11_find_slmp_bulk_to_rec.py と同じ形式）
+# Flag Config Helper（done_flag / error_flag 用。tri_s11_find_slmp の trigger_flag と同じ形式）
 ########################################
 
 def _parse_flag_block(block: Dict[str, Any], block_name: str) -> Dict[str, Any]:

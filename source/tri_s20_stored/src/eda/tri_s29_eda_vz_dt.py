@@ -2,7 +2,7 @@
 # Copyright (c) 2026 IWATA,Yoshitaka
 # https://github.com/yoshiiwt-hub/tri-on-edge-concept
 #################### FIX NOTE (2026.08.09  IWATA,Y.) ##########
-# tri_edge_22_eda_visualizer.py 経由での実行時、以下の既存バグ・改善を確認・修正した：
+# tri_s21_eda_viz_static 経由での実行時、以下の既存バグ・改善を確認・修正した：
 #  ①visualiseData() の 'hist' 分岐: ymin_/ymax_ 計算で DF[LstColumn[:1]]（スライス=DataFrame）
 #    に .min()/.max() をかけていたため、float()変換でSeriesを渡すことになりTypeErrorになっていた。
 #    DF[LstColumn[0]]（単一列名=Series）に修正（231行目付近の書き方と統一）。
@@ -26,8 +26,8 @@
 """
 ########################################
 # EDA Visualization Library [Static]（旧 AnalyzeFunctionsVZ_DT）
-# Ver: 01.a.20261102    By: IWATA, Y.'s Agent AI
-# Mod: 規約の形の Docstring を追加
+# Ver: 01.b.20261104    By: IWATA, Y.'s Agent AI
+# Mod: 公開版に向け、非公開・旧名のモジュールへの言及を整理
 ########################################
 分布・関係・相関などのグラフを画像で作り、Excel のレポートにまとめる可視化の本体
 

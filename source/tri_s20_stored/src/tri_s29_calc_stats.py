@@ -4,8 +4,8 @@
 """
 ########################################
 # Segment Stats Calculation Functions（20_stored 用ポータブル版）
-# Ver: 01.b.20261102    By: IWATA, Y.'s Agent AI
-# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
+# Ver: 01.c.20261104    By: IWATA, Y.'s Agent AI
+# Mod: 公開版に向け、非公開・旧名のモジュールへの言及を整理
 ########################################
 セグメントから統計量を求める計算を、Stream と同じ定義で Stored 側でも使えるようにする
 
@@ -14,7 +14,7 @@ compile_register_map  # column_register_map と output_column を検証し、計
 build_stats           # コンパイル済みのリストに従って、セグメントの統計量の辞書を作る。
 make_stat_func        # stat_name に対応する計算関数を作る。
 
-位置づけ: Stream の tri_s10_stream_wave_stat（旧 tri_edge_19_calc_stats）の計算部分の複製。データロードモジュール（load_pp/sin_wave の load_data 等）が、波形から統計量のテーブルを作るときに使う。
+位置づけ: Stream の tri_s10_stream_wave_stat の計算部分の複製。データロードモジュール（load_pp/sin_wave の load_data 等）が、波形から統計量のテーブルを作るときに使う。
 設計意図: Stream と同じ統計量の定義で学習データを作り、学習したモデルと Stream での判定の入力をそろえる。Stream 本体（supervise_base 等）には依存させず、Stored 側だけで動かせるようにする。
 前提・制約: build_stats は、seg[0][0]=seg_id、seg[0][2]=seg_ts_start、seg[-1][2]=seg_ts_end という行の構造を前提とする（Stream の tri_s12_act_csv が保存するセグメントの行と同じ）。Stored 側でセグメントを組み立てるときは、この並びに合わせる。
 """

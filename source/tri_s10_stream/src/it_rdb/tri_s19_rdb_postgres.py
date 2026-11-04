@@ -4,8 +4,8 @@
 """
 ########################################
 # PostgreSQL Client Utility Module
-# Ver: 01.k.20261102    By: IWATA, Y.'s Agent AI
-# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
+# Ver: 01.l.20261104    By: IWATA, Y.'s Agent AI
+# Mod: pg_merge_env の docstring の既定値を実装に合わせて修正
 ########################################
 PostgreSQL を使うトリガーが共通で使う、接続・取得・登録・テーブル管理の部品集
 
@@ -134,11 +134,11 @@ def pg_merge_env(config: dict) -> dict:
     元の config は変更しない（コピーを返す）。
 
     対応マッピング:
-        pg_host     ← PG_HOST  (default: "localhost")
-        pg_port     ← PG_PORT  (default: "5432")
-        pg_dbname   ← PG_DB    (default: "postgres")
-        pg_user     ← PG_USER  (default: "postgres")
-        pg_password ← PG_PASS  (default: "postgres")
+        pg_host     ← PG_HOST  (環境変数も無い場合: 空文字)
+        pg_port     ← PG_PORT  (環境変数も無い場合: "5432")
+        pg_dbname   ← PG_DB    (環境変数も無い場合: 空文字)
+        pg_user     ← PG_USER  (環境変数も無い場合: 空文字)
+        pg_password ← PG_PASS  (環境変数も無い場合: 空文字)
 
     使用例（LOOP INIT の先頭）:
         config = rdb.pg_merge_env(config)
