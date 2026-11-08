@@ -4,8 +4,8 @@
 """
 ########################################
 # Segment Stats Calculation Functions
-# Ver: 01.f.20261102    By: IWATA, Y.'s Agent AI
-# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
+# Ver: 01.g.20261108    By: IWATA, Y.'s Agent AI
+# Mod: pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string を削除。動作は変えない）
 ########################################
 セグメントから統計量を求める処理を、統計量を出力する Act の間で共通化する
 
@@ -28,7 +28,7 @@ import json
 import os
 import sys
 import traceback
-from   typing   import Any, Dict, List, Tuple, Sequence, Optional
+from   typing   import Any, Dict, List, Tuple, Optional
 
 """external library"""
 ## Not Using
@@ -667,6 +667,6 @@ def _compile_judge(idx: str, entry: list, crm: Dict[str, Any], oc: Dict[str, Any
 # Entry Point (for Debug)
 ########################################
 if __name__ == "__main__":
-    base.output_log(MODULE_NAME, f"Run Standalone.")
-    base.output_log(MODULE_NAME, f"test show Log")
+    base.output_log(MODULE_NAME, "Run Standalone.")
+    base.output_log(MODULE_NAME, "test show Log")
     base.output_log(MODULE_NAME, f"test save Log  {log_file}", log_file)

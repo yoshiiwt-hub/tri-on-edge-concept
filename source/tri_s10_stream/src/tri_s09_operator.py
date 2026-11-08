@@ -4,8 +4,8 @@
 """
 ########################################
 # Operator Module
-# Ver: 04.p.20261104    By: IWATA, Y.'s Agent AI
-# Mod: 公開版に向け、非公開・旧名のモジュールへの言及を整理
+# Ver: 04.q.20261108    By: IWATA, Y.'s Agent AI
+# Mod: pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string を削除。動作は変えない）
 ########################################
 StreamCore を起動・監視し、止まっても自動で再起動して、稼働状況を外部へ知らせる運用役
 
@@ -35,7 +35,7 @@ import sys
 import threading
 import time
 import traceback
-from   typing   import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
+from   typing   import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 import urllib.error   # Webhook
 import urllib.parse   # Webhook OAuth token取得
 import urllib.request # Webhook
@@ -429,7 +429,7 @@ def send_teams_card(webhook_url: str, proxy_url: str, card_data: dict,
             data=json_data, 
             headers=headers
         )
-        with opener.open(req, timeout=10) as res: pass
+        with opener.open(req, timeout=10): pass
     
     except Exception as e:
         base.output_log(MODULE_NAME, f"Teams Send Error: {e}")

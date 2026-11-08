@@ -4,8 +4,8 @@
 """
 ########################################
 # Utility Module
-# Ver: 02.w.20261102    By: IWATA, Y.'s Agent AI
-# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
+# Ver: 02.x.20261108    By: IWATA, Y.'s Agent AI
+# Mod: pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string を削除。動作は変えない）
 ########################################
 複数のトリガーで繰り返し使う、ファイル・フォルダ・SQLite・テキスト処理の部品集
 
@@ -33,7 +33,7 @@ import sqlite3
 import sys
 import time
 import traceback
-from   typing   import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
+from   typing   import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 """external library"""
 ## NOT Use
@@ -772,5 +772,5 @@ def save_json(
 if __name__ == "__main__":
     print(f"{MODULE_NAME} Run Standalone.")
     
-    base.output_log(MODULE_NAME, f"test show Log")
+    base.output_log(MODULE_NAME, "test show Log")
     base.output_log(MODULE_NAME, f"test save Log  {log_file}", log_file)

@@ -4,8 +4,9 @@
 """
 ########################################
 # Single Run Test [Act Trigger: Socket Send - Log Output]
-# Ver: 01.a.20261027    By: IWATA, Y.'s Agent AI
-# Mod: 新規作成（正常に送ったセグメントのログは画面のみ、ACK NG で中断したものはログファイルにも残す）
+# Ver: 01.b.20261106    By: IWATA, Y.'s Agent AI
+# Mod: act_socket の設定の変更（skip_on_offline → not_connectable_action）に合わせた
+#      新規作成（正常に送ったセグメントのログは画面のみ、ACK NG で中断したものはログファイルにも残す）
 ########################################
 a_send_seg_trigger（ack_mode=true）を、localhost の空きポートで動かした小さなソケットサーバへつなぎ、
 base.output_log の呼び出しを記録して、ログファイルに書くか（log_file を渡すか）を確かめるテスト
@@ -95,7 +96,7 @@ class TestActSocketLog(unittest.TestCase):
         server = _AckServer(reply)
         self.addCleanup(server.close)
         config = {"server_ip": "127.0.0.1", "server_port": server.port, "ack_mode": True,
-                  "skip_on_offline": False, "reconnect_interval_sec": 0.2, "timeout_sec": 5.0}
+                  "not_connectable_action": "wait", "reconnect_interval_sec": 0.2, "timeout_sec": 5.0}
         config.update(overrides)
         logs: List[Tuple[str, str]] = []
         orig = base.output_log

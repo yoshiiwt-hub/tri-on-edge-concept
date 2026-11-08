@@ -4,8 +4,8 @@
 """
 ########################################
 # Learn Runner
-# Ver: 02.d.20261102    By: IWATA, Y.'s Agent AI
-# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
+# Ver: 02.e.20261108    By: IWATA, Y.'s Agent AI
+# Mod: pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string を削除。動作は変えない）
 ########################################
 蓄積したデータから、Stream の診断（異常判定）で使う正常状態のモデルを学習する入口
 
@@ -26,7 +26,7 @@ import os
 from   pathlib  import Path
 import sys
 import traceback
-from   typing   import Any, Dict, List, Tuple
+from   typing   import Tuple
 
 """external library"""
 # (Not Using)
@@ -67,7 +67,7 @@ def load(TITLE, MODULE, OUTPUT) -> Tuple:
     （例: sin_wave.py の load_wave_data()＝波形データ、load_data()＝波形統計量。
     今後 load_pp/ に追加する他モジュールの関数も同様に指定可能）。
     """
-    utl.log(f"Data Load Start.", MODULE_NAME)
+    utl.log("Data Load Start.", MODULE_NAME)
     try:
         _module = importlib.import_module(f"{MODULE[0]}.{MODULE[1]}")
         if not hasattr(_module, MODULE[2]):
@@ -84,7 +84,7 @@ def load(TITLE, MODULE, OUTPUT) -> Tuple:
         print(traceback.format_exc(), flush=True)
         raise
 
-    utl.log(f"Data Load End.", MODULE_NAME)
+    utl.log("Data Load End.", MODULE_NAME)
     return df, col_def
 
 
@@ -98,7 +98,7 @@ def learn(TITLE, MODULE, df, col_def, CONFIG) -> None:
     呼び出し先の関数は main(TITLE, df, col_def, config) の形式であること
     （tri_s21_learn_us_gb.py / tri_s21_learn_us_mt.py の main() 参照）。
     """
-    utl.log(f"Learn Start.", MODULE_NAME)
+    utl.log("Learn Start.", MODULE_NAME)
     try:
         _module = importlib.import_module(f"{MODULE[0]}.{MODULE[1]}")
         if not hasattr(_module, MODULE[2]):
@@ -112,7 +112,7 @@ def learn(TITLE, MODULE, df, col_def, CONFIG) -> None:
         print(traceback.format_exc(), flush=True)
         raise
 
-    utl.log(f"Learn End.", MODULE_NAME)
+    utl.log("Learn End.", MODULE_NAME)
 
 
 ########################################

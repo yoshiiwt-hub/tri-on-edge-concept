@@ -4,8 +4,8 @@
 """
 ########################################
 # Stream Core Module
-# Ver: 08.e.20261102    By: IWATA, Y.'s Agent AI
-# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
+# Ver: 08.g.20261108    By: IWATA, Y.'s Agent AI
+# Mod: pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string を削除。動作は変えない）
 ########################################
 Find（入力）と Act（出力）をつなぎ、データをセグメント単位で受け渡す Stream 領域の中核
 
@@ -14,7 +14,7 @@ main                    # 設定を読み込み、Find・Act を起動してス�
 _prepare_boot           # 二重起動の確認、停止ファイルの削除、設定の読込みを行う。
 _supervise_error_events # Find・Act スレッドのエラーを監視し、停止・継続を判断する。
 
-位置づけ: Operator が起動・再起動する処理本体。開始・終了の判定と切り出しは wave_cutout に任せ、Core はセグメントの受け渡し（IMQ / STQ）と稼働監視（ハートビート・制御ファイル）に専念する。
+位置づけ: Operator が起動・再起動する処理本体。開始・終了の判定と切り出しは wave_cutout に任せ、Core はセグメントの受け渡し（IMQ / STQ）と稼働監視（ハートビート・制御ファイル）に専念する。STQ の部品は tri_s01_storage_queue を使う。
 設計意図: Find と Act を別スレッドにしてキューでつなぎ、互いの処理速度や障害が直接影響しないようにする。設定は main() のたびに読み直し、再起動だけで設定変更を反映できるようにする。
 前提・制約: import しただけでは何もしない（処理は main() から始まる）。Find・Act との約束（キューに入れる形、CUT_LAST_ROW 属性）は『新規トリガー開発ガイドライン』を参照。
 """
@@ -73,9 +73,9 @@ except ModuleNotFoundError:
         sys.exit(1)
 
 """local module"""
-import src.tri_s01_error_if       as err
 from   src.tri_s01_error_if import ErrorIF, SIGNAL_STOP
 import src.tri_s10_stream_wave_cutout as cutout
+import src.tri_s01_storage_queue    as stq
 
 """system dir, file"""
 system_root = base.get_system_root()
@@ -196,7 +196,7 @@ def _prepare_boot() -> None:
     """二重起動の確認（ハートビートファイル）"""
     if os.path.exists(hb_file):
         try:
-            base.output_log(MODULE_NAME, f"Hb_file Already Exists. Checking Current Heartbeat ...", log_file)
+            base.output_log(MODULE_NAME, "Hb_file Already Exists. Checking Current Heartbeat ...", log_file)
             time.sleep(5.0) # Wait Heartbeat for Safety
             if os.path.exists(hb_file): # for HB Removed in 5 min
                 last_time = os.path.getmtime(hb_file)
@@ -209,7 +209,7 @@ def _prepare_boot() -> None:
         except KeyboardInterrupt:
             raise
         except Exception:
-            base.output_log(MODULE_NAME, f"Can NOT Remove Previous Heartbeat File. System Go on.", log_file)
+            base.output_log(MODULE_NAME, "Can NOT Remove Previous Heartbeat File. System Go on.", log_file)
             pass
     base.output_log(MODULE_NAME, f"hb_file={hb_file}", log_file)
 
@@ -218,7 +218,7 @@ def _prepare_boot() -> None:
         try:
             os.remove(stop_file)
         except Exception:
-            base.output_log(MODULE_NAME, f"Can NOT Remove Previous Stop File. To STOP System.", log_file)
+            base.output_log(MODULE_NAME, "Can NOT Remove Previous Stop File. To STOP System.", log_file)
             sys.exit(-1)
     base.output_log(MODULE_NAME, f"stop_file={stop_file}", log_file)
 
@@ -381,9 +381,6 @@ def main() -> None:
         }
         if not col_define_f: raise ValueError("Find Trigger Column Setting Not Found.")
         
-        col_define_f_keys   = [col_define_f[k][0] for k in sorted(col_define_f.keys())]
-        col_define_f_dtypes = [col_define_f[k][1] for k in sorted(col_define_f.keys())]
-        
         # Act に渡る行の先頭の固定4列（列名は base.SEG_HEADER_COLS。Act の設定ではこの名前で指定する）
         _seg_header_def = {
               "seg_id"    : ["int" , "key", "key", "Segment ID"]
@@ -523,7 +520,6 @@ def main() -> None:
     """======== LOOP INIT ========"""
     loop_counter = 0
     last_heartbeat_time = 0.0
-    my_pid = os.getpid()
     stop_detect_count = 0
     last_stop_check = time.time()
     seg_id = 0
@@ -536,13 +532,13 @@ def main() -> None:
     stq_conf = None
     if is_stq:
         # DB File Path, Table Name, Columns
-        stq_path = base.get_storage_queue_path()
-        tab_name = base.get_storage_queue_tab()
-        tab_col  = base.coldef_to_table_col(col_define_a)
+        stq_path = stq.get_storage_queue_path()
+        tab_name = stq.get_storage_queue_tab()
+        tab_col  = stq.coldef_to_table_col(col_define_a)
         
         # Initialize, Conn Config, SQL
-        conn = base.initialize_db(stq_path, tab_name, tab_col)
-        _sql = base.stq_prepare_sql(tab_name, tab_col)
+        conn = stq.stq_initialize_db(stq_path, tab_name, tab_col)
+        _sql = stq.stq_prepare_sql(tab_name, tab_col)
         sql_i = _sql["insert_new_seg"]
         sql_d = _sql["delete_by_status"]
         sql_err_cnt = _sql["count_error"]
@@ -574,7 +570,7 @@ def main() -> None:
             seg_ind = seg_copy[-1][1]
         try:
             if stq_conf: # Storage Queue
-                base.stq_insert_new_seg(conn, sql_i, seg_copy)
+                stq.stq_insert_new_seg(conn, sql_i, seg_copy)
                 STQ_CLEANUP_PROC_COUNT += 1
 
         except Exception as e:
@@ -624,7 +620,7 @@ def main() -> None:
                     STQ_CLEANUP_PROC_COUNT,
                     n_deleted,
                     clear_error
-                ) = base.stq_cleanup(
+                ) = stq.stq_cleanup(
                     conn,
                     sql_d,
                     status_to_del,
@@ -638,7 +634,7 @@ def main() -> None:
                 if 0 < n_deleted:
                     base.output_log(MODULE_NAME, f"Storage Queue Clean-up Done. Deleted {n_deleted} Records.", log_file)
                 if clear_error:
-                    base.output_log(MODULE_NAME, f"Anomaly Queue Clean-up Done.", log_file)
+                    base.output_log(MODULE_NAME, "Anomaly Queue Clean-up Done.", log_file)
 
             except Exception as e:
                 base.output_log(MODULE_NAME, f"Storage Queue Clean-up Error: {e}", log_file)
@@ -663,7 +659,7 @@ def main() -> None:
                 try:
                     Path(hb_file).touch()
                 except Exception:
-                    base.output_log(MODULE_NAME, f"Can NOT Record Heartbeat. System Go on.")
+                    base.output_log(MODULE_NAME, "Can NOT Record Heartbeat. System Go on.")
                     pass # 書込み異常でも継続を優先
                 
                 """エラーキュー回収・監督処理"""
@@ -757,11 +753,11 @@ def main() -> None:
         _seg_summary_emit()# 停止までの途中分の集計
         
         # Worker終了（例外時も確実に実行）
-        base.output_log(MODULE_NAME, f"Worker停止手順を開始", log_file)
+        base.output_log(MODULE_NAME, "Worker停止手順を開始", log_file)
         
         stop_event_find.set() # 入力側を先に停止（以後は post_queue.put しない）
         try:
-            base.output_log(MODULE_NAME, f"残キュー処理開始", log_file)
+            base.output_log(MODULE_NAME, "残キュー処理開始", log_file)
             segment_buffer.clear()# 残バッファを破棄
             act_queue.put(None)# ワーカー数分のセンチネルを投入
 
@@ -809,19 +805,19 @@ def main() -> None:
 
             time.sleep(2)
     
-    base.output_log(MODULE_NAME, f"残キュー処理完了", log_file)
+    base.output_log(MODULE_NAME, "残キュー処理完了", log_file)
 
     """remove heartbeat file"""
     if os.path.exists(hb_file):
         try:
             os.remove(hb_file)
         except Exception:
-            base.output_log(MODULE_NAME, f"Can NOT Remove Heartbeat File.", log_file)
+            base.output_log(MODULE_NAME, "Can NOT Remove Heartbeat File.", log_file)
             pass
         
     """ErrorIF 終了処理"""
     ErrorIF.shutdown()
-    base.output_log(MODULE_NAME, f"ErrorIF shutdown.", log_file)
+    base.output_log(MODULE_NAME, "ErrorIF shutdown.", log_file)
     
     base.output_log(MODULE_NAME, "StreamCore Stopped Completely.", log_file)
 

@@ -4,8 +4,8 @@
 """
 ########################################
 # Supervise Base Module
-# Ver: 03.j.20261103    By: IWATA, Y.'s Agent AI
-# Mod: ログファイルの書き出しを BOM 無しの UTF-8 に変更（C-11）
+# Ver: 03.l.20261108    By: IWATA, Y.'s Agent AI
+# Mod: pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string を削除。動作は変えない）
 ########################################
 全モジュールが共通で使う、パス・設定・ログ・状態の置き場となる基盤
 
@@ -16,11 +16,10 @@ load_trigger_setting_01 / 02               # トリガー設定ファイルを�
 set_cast_dtype / cast_dtype                # col_def に従って値を型変換する。
 resolve_act_col / resolve_act_cols         # Act の設定に書いた列番号を、Act に渡る行の中の位置に変換する。
 metrics_* / notify_*                       # 運用系メトリクスと通知要求を、トリガーから Operator へ受け渡す。
-stq_*                                      # Storage Queue（SQLite）への登録・取得・状態更新を行う。
 
 位置づけ: 他のすべてのモジュールが最初に import する。パスの決定と設定の読込みをここに集め、各モジュールが個別に解決しないようにする。
 設計意図: システムルートは実行ファイル（.exe）またはソースの配置場所から決め、起動したフォルダに左右されないようにする。メトリクス・通知要求・モードの受け渡しはこのモジュールを介し、トリガーと Operator が互いを import しないようにする。
-前提・制約: import した時点で、パスの決定と .env の読込みが行われる。オフライン・デバッグのモードは Operator だけが更新する。
+前提・制約: import した時点で、パスの決定と .env の読込みが行われる。オフライン・デバッグのモードは Operator だけが更新する。Storage Queue（stq）は tri_s01_storage_queue が受け持つ。
 """
 MODULE_NAME = "BASE"
 
@@ -31,12 +30,10 @@ import json
 import logging
 from   logging.handlers import RotatingFileHandler
 import os
-import sqlite3
 import sys
 import threading
 import time
-import traceback
-from   typing   import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple, Union
+from   typing   import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 """external library"""
 ## NOT Use
@@ -65,9 +62,6 @@ _CTRL_STATE_OFFLINE_PATH = None
 _CTRL_STATE_DEBUG_PATH = None
 _CURRENT_LOG_PATH = None
 _LOGGERS: Dict[str, logging.Logger] = {}
-_STORAGE_QUEUE_PATH = None
-_STORAGE_QUEUE_TAB = None
-STQ_ERROR_MAX = 100_000
 
 def _set_root_dir() -> None:
     """Initialize System Directories & Paths"""
@@ -87,8 +81,6 @@ def _set_root_dir() -> None:
     global _CTRL_STATE_OFFLINE_PATH
     global _CTRL_STATE_DEBUG_PATH
     global _CURRENT_LOG_PATH
-    global _STORAGE_QUEUE_PATH
-    global _STORAGE_QUEUE_TAB
     
     try:
         # 1. Define Root Dir
@@ -133,8 +125,6 @@ def _set_root_dir() -> None:
         _CTRL_STOP_STREAM_PATH = os.path.join(_WORK_RUN_DIR, "_oneshot_stop_stream.triedge_control")
         _CTRL_STATE_OFFLINE_PATH = os.path.join(_WORK_RUN_DIR, "_mode_offline.triedge_control")
         _CTRL_STATE_DEBUG_PATH = os.path.join(_WORK_RUN_DIR, "_mode_debug.triedge_control")
-        _STORAGE_QUEUE_PATH = os.path.join(_WORK_SPOOL_DIR, "_storage_queue.db")
-        _STORAGE_QUEUE_TAB = "storage_queue"
 
     except Exception as e:
         msg = f"[BASE] _set_root_dir FATAL ERROR: {e}"
@@ -338,18 +328,6 @@ def get_ctrl_state_debug_path() -> str:
     """Accessor for Control File to Change State to Debug"""
     if _CTRL_STATE_DEBUG_PATH is None: _set_root_dir()
     return _CTRL_STATE_DEBUG_PATH
-
-
-def get_storage_queue_path() -> str:
-    """Accessor for Storage Queue File"""
-    if _STORAGE_QUEUE_PATH is None: _set_root_dir()
-    return _STORAGE_QUEUE_PATH
-
-
-def get_storage_queue_tab() -> str:
-    """Accessor for Storage Queue Table Name"""
-    if _STORAGE_QUEUE_TAB is None: _set_root_dir()
-    return _STORAGE_QUEUE_TAB
 
 
 ########################################
@@ -638,7 +616,7 @@ def load_env_if_exists() -> list:
         return None
     
     encodings = ['utf-8-sig', 'cp932', 'euc-jp']
-    keys, content, error = [], "", None
+    keys = []
     for enc in encodings:
         try:
             with open(ENV_PATH, 'r', encoding=enc) as f:
@@ -664,8 +642,7 @@ def load_env_if_exists() -> list:
                     keys.append(key)
                 return keys
                     
-        except Exception as e:
-            error = e
+        except Exception:
             continue
     return keys
 
@@ -730,245 +707,6 @@ def resolve_act_cols(values: Any, col_def: Union[Dict[int, Any], Sequence[Any]],
     if not isinstance(values, (list, tuple)):
         values = [values]
     return [resolve_act_col(v, col_def, key) for v in values]
-
-
-########################################
-# Storage Queue Functions
-########################################
-
-def coldef_to_table_col(
-    col_def : Dict
-) -> dict:
-    _table_col = {}
-    type_map = {
-        "time" : "TEXT"   , "timestamp": "TEXT"   ,
-        "str"  : "TEXT"   , "string"   : "TEXT"   ,
-        "int"  : "INTEGER", "integer"  : "INTEGER",
-        "float": "REAL"   , "real"     : "REAL"   ,
-    }
-    for key, val in sorted(col_def.items()):
-        col_name = val[0]
-        d_type = type_map.get(val[1].lower(), "TEXT")
-        _table_col[key] = [col_name, d_type, ""]
-    return _table_col
-
-
-def initialize_db(
-    db_path : str,
-    tab_name: str,
-    col_def : Dict,
-) -> sqlite3.Connection:
-    """Initialize DB"""
-    conn, cur = None, None
-    try:
-        """
-        Define DB
-        - STQはストリームデータの一時保持。次回起動時に初期化される
-        - キュー用途であり、トランザクション処理はない（→journalは不要）
-        - SSD寿命を考慮し、ファイル書込み処理は必要最低限にする
-        """
-        db_dir = os.path.dirname(db_path)
-        if db_dir: os.makedirs(db_dir, exist_ok=True)
-        conn = sqlite3.connect(db_path)
-        cur  = conn.cursor()
-        cur.execute("PRAGMA journal_mode = MEMORY;") # journal自体は不要だが、ロックの緩和のため設定
-        cur.execute("PRAGMA synchronous  = OFF;") # ファイル書込みはOSに委ねる
-        cur.execute("PRAGMA temp_store = MEMORY;") # 一時ファイルをRAMに置く
-        cur.execute("PRAGMA page_size = 4096;") # 書込みサイズをSSDブロックサイズに合わせる（4096 or 8192）
-        
-        """Create Table"""
-        _l = []
-        for v in col_def.values(): _l.append(f"{v[0]} {v[1]} {v[2]}")
-        _sql_base = ", ".join(_l)
-        cur.execute(f"DROP TABLE IF EXISTS {tab_name}")
-        cur.execute(f"CREATE TABLE {tab_name} ({_sql_base})")
-        cur.execute(f"CREATE UNIQUE INDEX IF NOT EXISTS idx_{tab_name}_main ON {tab_name} (seg_id, seg_ind)")
-        cur.execute(f"CREATE INDEX IF NOT EXISTS idx_{tab_name}_status ON {tab_name} (seg_id, seg_status)")
-        conn.commit()
-        
-        error_tab = f"{tab_name}_error"
-        _l = []
-        for v in col_def.values(): _l.append(f"{v[0]} {v[1]} {v[2]}")
-        _l.append("error_ts  TEXT  DEFAULT (datetime('now','localtime'))")
-        _l.append("error_msg TEXT")
-        cur.execute(f"DROP TABLE IF EXISTS {error_tab}")
-        _sql_base = ', '.join(_l)
-        cur.execute(f"CREATE TABLE {error_tab} ({_sql_base})")
-        cur.execute(f"CREATE INDEX IF NOT EXISTS idx_{error_tab}_seg_id ON {error_tab} (seg_id)")
-        conn.commit()
-        
-    except Exception as e:
-        output_log(MODULE_NAME, f"{e}\n{traceback.format_exc()}\n", _CURRENT_LOG_PATH)
-
-    finally:
-        if cur is not None: cur.close()
-    return conn
-
-
-def stq_prepare_sql(
-    tab_name: str,
-    tab_col: dict
-) -> dict:
-    """
-    Storage Queue用のSQL文を一括生成する
-    tab_col: coldef_to_table_col(col_def) の戻り値（列数のみ使用。呼び出し側はこの型で渡すこと。B-4）
-    """
-    _placeholders = ', '.join(['?'] * len(tab_col))
-    error_tab = f"{tab_name}_error"
-    _sql = {
-    "insert_new_seg"     : f"INSERT INTO {tab_name} VALUES ({_placeholders})",
-    "select_new_seg"     : f"SELECT * FROM {tab_name} WHERE seg_id = ? AND seg_status = 0 ORDER BY seg_ind ASC",
-    "update_seg_status"  : f"UPDATE {tab_name} SET seg_status = ? WHERE seg_id = ?",
-    "update_rec_status"  : f"UPDATE {tab_name} SET seg_status = ? WHERE seg_id = ? AND seg_ind = ?",
-    "delete_by_status"   : f"DELETE FROM {tab_name} WHERE seg_status = ?",
-    "trans_seg_to_error" : f"INSERT INTO {error_tab} SELECT *, ?, ? FROM {tab_name} WHERE seg_id = ?",
-    "trans_rec_to_error" : f"INSERT INTO {error_tab} SELECT *, ?, ? FROM {tab_name} WHERE seg_id = ? AND seg_ind = ?",
-    "count_error" : f"SELECT count(*) FROM {error_tab}",
-    "clear_error" : f"DELETE FROM {error_tab}",
-}
-    return _sql
-
-
-def stq_open(
-    stq_path: str
-) -> sqlite3.Connection:
-    """Storage Queue の SQLite 接続を開く"""
-    conn = sqlite3.connect(
-        stq_path,
-        timeout=10.0,
-        check_same_thread=False
-    )
-    conn.execute("PRAGMA journal_mode = MEMORY;")
-    conn.execute("PRAGMA synchronous  = OFF;")
-    conn.execute("PRAGMA temp_store   = MEMORY;")
-    return conn
-
-
-def _to_sqlite_val(v):
-    """datetimeをTEXTに変換"""
-    if isinstance(v, dt):
-        return v.strftime("%Y-%m-%d %H:%M:%S.%f")
-    return v
-
-
-def stq_insert_new_seg(
-    conn : sqlite3.Connection,
-    sql_i: str,
-    rows : list
-) -> None:
-    """新規segmentを登録"""
-    safe_rows = [
-        [_to_sqlite_val(v) for v in row] for row in rows
-    ]
-    conn.executemany(sql_i, safe_rows)
-    conn.commit()
-    return None
-
-
-def stq_select_new_seg(
-    conn: sqlite3.Connection,
-    sql_r: str,
-    sql_u_seg: str,
-    seg_id: str
-) -> list:
-    """新規segmentを取得し、seg_statusを更新"""
-    rows = conn.execute(sql_r, (seg_id,)).fetchall()
-    if not rows: return None
-    
-    conn.execute(sql_u_seg, (1, seg_id)) # 取得成功
-    conn.commit()
-    return rows
-
-
-def stq_update_seg(
-    conn: sqlite3.Connection,
-    sql_u_seg: str,
-    seg_id: str,
-    status: int
-) -> None:
-    """seg全体のseg_statusを更新"""
-    conn.execute(sql_u_seg, (status, seg_id))
-    conn.commit()
-    return None
-
-
-def stq_update_rec(
-    conn: sqlite3.Connection,
-    sql_u_rec: str,
-    seg_id: str,
-    seg_ind: int,
-    status: int
-) -> None:
-    """rec単位でseg_statusを更新"""
-    conn.execute(sql_u_rec, (status, seg_id, seg_ind))
-    conn.commit()
-    return None
-
-
-def stq_trans_seg_to_error(
-    conn : sqlite3.Connection,
-    sql_t : str,
-    sql_u : str,
-    seg_id : int,
-    error_msg: str = ""
-) -> None:
-    """エラーsegmentをエラーテーブルに移動"""
-    error_ts = dt.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-    conn.execute(sql_t, (error_ts, error_msg, seg_id))
-    conn.execute(sql_u, (2, seg_id))
-    conn.commit()
-    return None
-
-
-def stq_trans_rec_to_error(
-    conn : sqlite3.Connection,
-    sql_t : str,
-    sql_u : str,
-    seg_id : int,
-    seg_ind : int,
-    error_msg: str = ""
-) -> None:
-    """エラーrecordをエラーテーブルに移動"""
-    error_ts = dt.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-    conn.execute(sql_t, (error_ts, error_msg, seg_id, seg_ind))
-    conn.execute(sql_u, (2, seg_id, seg_ind))
-    conn.commit()
-    return None
-
-
-def stq_cleanup(
-    conn: sqlite3.Connection,
-    sql_d: str,
-    status_to_del: int,
-    sql_err_cnt: str,
-    sql_err_clr: str,
-    cleanup_last_time: float,
-    cleanup_proc_count: int,
-    interval_sec: float,
-    interval_proc: int
-) -> tuple:
-    clear_error = False
-
-    """Storage Queue Table Clean-up"""
-    should_cleanup = (
-        time.time() - cleanup_last_time >= interval_sec or
-        cleanup_proc_count >= interval_proc
-    )
-    if not should_cleanup:
-        return cleanup_last_time, cleanup_proc_count, 0, clear_error
-
-    conn.execute(sql_d, (status_to_del,))
-    deleted = conn.execute("SELECT changes()").fetchone()[0]
-    conn.commit()
-    
-    """Error Queue Table Clean-up"""
-    n_error = conn.execute(sql_err_cnt).fetchone()[0]
-    if n_error > STQ_ERROR_MAX:
-        conn.execute(sql_err_clr)
-        conn.commit()
-        clear_error = True
-    
-    return time.time(), 0, deleted, clear_error
 
 
 def set_cast_dtype(

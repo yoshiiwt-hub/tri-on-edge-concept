@@ -1,0 +1,13 @@
+# Python 3.11 recommended (>=3.10)
+# 64-bit recommended
+
+numpy
+pandas
+scipy
+scikit-learn
+matplotlib
+seaborn
+plotly
+pyarrow    # for parquet
+openpyxl         # for Excel output (eda: profiler, vz_dt image_to_excel)
+opencv-python    # for image size in vz_dt image_to_excel (cv2)

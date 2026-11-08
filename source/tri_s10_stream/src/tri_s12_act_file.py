@@ -4,8 +4,8 @@
 """
 ########################################
 # Act Trigger Module [FILE HANDLE]
-# Ver: 08.f.20261102    By: IWATA, Y.'s Agent AI
-# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
+# Ver: 08.g.20261109    By: IWATA, Y.'s Agent AI
+# Mod: 公開版に向け、公開していないファイルへの参照を削除
 ########################################
 Find が検出したファイルを、現場のファイル運用ルールに沿って後始末する Act
 
@@ -105,7 +105,7 @@ def a_handle_file_trigger(
         move / copy / zip は <名前>.tmp に書き込んでからリネームする
         to_dir に数値を指定した場合、値が空・"____" の行は処理せず異常として記録する（ファイルは元の場所に残る）
         旧 delete_keep_folder はフォルダ処理の廃止に伴い無視する（設定されていれば起動時に WARN）
-        フォルダの処理は別の Act として検討中（_dev/src/tri_s12_act_dir.py.draft.txt 参照）
+        フォルダの処理は別の Act として検討中
         運用系メトリクス: last_ok_file / total_ok_files / last_ng_file / total_ng_files（正常は画面表示のみ、異常はログファイルにも残す）
     """
     TRIGGER_NAME = "a_handle_file_trigger"

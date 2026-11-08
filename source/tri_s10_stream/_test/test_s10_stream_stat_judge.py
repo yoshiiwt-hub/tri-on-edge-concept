@@ -4,8 +4,9 @@
 """
 ########################################
 # Unit Test [Wave Stats: judge]
-# Ver: 01.a.20261029    By: IWATA, Y.'s Agent AI
-# Mod: 新規作成（column_register_map の judge: 統計量の値を条件で判定し、判定結果を新しい列に出す）
+# Ver: 01.b.20261106    By: IWATA, Y.'s Agent AI
+# Mod: act_socket の設定の変更（skip_on_offline → not_connectable_action）に合わせた
+#      新規作成（column_register_map の judge: 統計量の値を条件で判定し、判定結果を新しい列に出す）
 ########################################
 統計量（tri_s10_stream_wave_stat）の judge と、統計量の act（a_save_stats_trigger）を通した出力のテスト
 
@@ -244,7 +245,7 @@ class TestStatJudgeAct(unittest.TestCase):
         th = threading.Thread(target=_serve, daemon=True)
         th.start()
         self._run(a_send_stats_trigger, {"server_ip": "127.0.0.1", "server_port": srv.getsockname()[1],
-                                         "ack_mode": False, "skip_on_offline": False, "save_dir": self.tmp})
+                                         "ack_mode": False, "not_connectable_action": "wait", "save_dir": self.tmp})
         th.join(timeout=10)
         self.assertEqual(len(received), 1, received)
         rec = json.loads(received[0])

@@ -4,8 +4,8 @@
 """
 ########################################
 # EDA Interactive Visualizer
-# Ver: 01.g.20261104    By: IWATA, Y.'s Agent AI
-# Mod: 公開版に向け、非公開・旧名のモジュールへの言及を整理
+# Ver: 01.h.20261108    By: IWATA, Y.'s Agent AI
+# Mod: pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string を削除。動作は変えない）
 ########################################
 データの傾向・関係・波形の重なりを、拡大・絞り込みのできる対話的なグラフ（Plotly）で確かめる
 
@@ -61,7 +61,7 @@ def _parse_col_def(
 
     for k in sorted(col_def.keys(), key=lambda s: int(s) if str(s).isdigit() else s):
         entry = col_def[k]
-        name, dtype, role, var_type = entry[0], entry[1], entry[2], entry[3]
+        name, role, var_type = entry[0], entry[2], entry[3]
 
         if role == "category":
             IsQualittv.append(name)
@@ -220,8 +220,8 @@ def main(TITLE: str, df, col_def: Dict[str, List[Any]], config: Dict[str, Any]) 
     )
 
     if targetname is None:
-        utl.log(f"WARNING  col_def に var_type='objective' の列が見つかりません。"
-                 f"gen_interact_* 側の仕様上、目的変数無しでは正しく動作しない可能性があります。",
+        utl.log("WARNING  col_def に var_type='objective' の列が見つかりません。"
+                 "gen_interact_* 側の仕様上、目的変数無しでは正しく動作しない可能性があります。",
                  MODULE_NAME)
 
     # 波形重ね合わせ（gen_interact_layered_wave）向けに、TriEdge標準のseg_id/seg_indを

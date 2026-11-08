@@ -11,8 +11,9 @@
 """
 ########################################
 # EDA Visualization Library [Interactive]（旧 AnalyzeFunctionsVZ_UI）
-# Ver: 01.b.20261104    By: IWATA, Y.'s Agent AI
-# Mod: 公開版に向け、非公開・旧名のモジュールへの言及を整理
+# Ver: 01.e.20261108    By: IWATA, Y.'s Agent AI
+# Mod: pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string を削除。動作は変えない）。
+#      改行を CRLF にそろえた
 ########################################
 散布図・分布・折れ線・波形の重ね描きを、対話的なグラフ（Plotly）で作る可視化の本体
 
@@ -27,7 +28,6 @@ gen_interact_layered_wave  # 波形の重ね描きを作る（列 WVID / WVPT �
 前提・制約: 波形の重ね描きは列名 WVID（波形 ID）/ WVPT（波形内の位置）を前提とする（呼び出し側で seg_id / seg_ind から変換する）。取り込み時に見つけた不具合の修正内容は、冒頭の FIX NOTE を参照。
 """
 #################### IMPORT LIBRARY ##########
-import copy             #リストのコピー
 import datetime as dt   #時間、時刻
 import itertools as itr #組み合わせ
 import numpy as np
@@ -1408,216 +1408,29 @@ def gen_interact_layered_wave(df, l_col_ql, l_col_qn, tar_, d_cfg_):
 ##:def
 ########################################
 
-############### データ準備 ###############
-## v01a.20230616
-## df, targetname, featurename, IsQualittv, IsQuanttv = prepare_wave_data(title_)
-def prepare_wave_data(TITLE_):
-    import AnalyzeFunctionsWV    as AFPW
-    print(dt.datetime.now(), "[START] PREPARE DATA", '\n')
-    
-    ## df_, l_tar_, l_fea_, l_ql_, l_qn_
-    if (TITLE_ in ["Tb_wv"]):
-        df_wv,_,_,_ = AFPW.Tb_CUTOUT({"rule":"UpTo","ThLw":20,"offset":0},{"rule":"DwTo","ThUp":20,"offset":20},20)#{"rule":"UpTo","ThLw":100,"offset":10} {"rule":"DwTo","ThUp":60,"offset":20}
-        df_wv['Val2'] = abs(df_wv['Val'] - 110)
-        df_wv['CAT'], df_wv['CAT2'] = df_wv['WVID'] % 5, df_wv['WVID'] % 3
-        l_tar_, l_fea_ = ['CL'], ['Val','Val2','CAT','CAT2']
-        l_ql_, l_qn_   = ['CL','CAT','CAT2'], ['Val','Val2']
-        
-    elif (TITLE_ in ["Sensor_wv"]):
-        df_wv,_,_,_ = AFPW.Sensor_CUTOUT('','','')
-        l_tar_, l_fea_ = ['anomaly'], ['sendt1','lot']
-        l_ql_, l_qn_   = ['anomaly','lot'], ['sendt1']
-        
-    elif (TITLE_ in ["Sin_wv"]):
-        df_wv,_,_,_ = AFPW.Sin_CUTOUT({"rule":'FLG',"offset":25},{"rule":'FLG',"offset":50},'')
-        
-        df_wv['CAT']  = df_wv['WVID'] % 5
-        l_tar_, l_fea_ = ['CL'], ['Sin','Cos','Tan',] # 'LOT'
-        l_ql_, l_qn_   = ['CL','CAT'], ['Sin','Cos','Tan']
-    ##:if
-    
-    print()
-    print(dt.datetime.now(),"[END] PREPARE DATA",'\n')
-    return df_wv, l_tar_, l_fea_, l_ql_, l_qn_
 ########################################
-
-########################################
+## 単体テスト（load_pp/wine.py のデータで HTML を出力する）
+## Mod: 2026.11.04    By: IWATA, Y.'s Agent AI（AnalyzeFunctions* に依存しない形に置き換え）
 if (__name__ == "__main__"):
-    import AnalyzeFunctionsVZ_UI as AFVU
-    FILENAME = os.path.basename(__file__)
-    DIRNAME  = os.path.dirname(__file__)
-    OUTDIR = DIRNAME+"/output/" ## "/DIO/"+title+"/output/"
-    if not(os.path.exists(OUTDIR)): os.makedirs(OUTDIR)
-##:if
-
-## データ準備
-if (__name__ == "__main__"):
-    print(dt.datetime.now(),'\n')
-    import AnalyzeFunctionsDT as AFD
+    import sys
+    from pathlib import Path
+    sys_dir = Path(__file__).resolve().parent.parent
+    if str(sys_dir) not in sys.path: sys.path.insert(0, str(sys_dir))
+    from load_pp import wine
     
-    title   = "MPG" ## Iris Wine MPG Ames AWB ATTRI STL TTN GLSS FrFr BNT Sensor Tb Tg Sin DataXn
-    is_wave = (title[-3:]=='_wv') ## Tb_wv Sensor_wv Sin_wv
+    df, col_def = wine.load_data()
+    l_def = [col_def[k] for k in sorted(col_def.keys(), key=int)]
+    Ql  = [v[0] for v in l_def if (v[2]=="category")]
+    Qn  = [v[0] for v in l_def if (v[2]=="numetory")]
+    tar = [v[0] for v in l_def if (v[3]=="objective")][0]
     
-    gen_layer = (is_wave)    ## True False
-    gen_dist  = False##not(is_wave) ## 
-    gen_line  = False##not(is_wave) ##
-    gen_scat  = not(is_wave) ## False##
-    plot_show = "layer" if (is_wave) else "scat" ## layer dist line scat
-    save_plot = True ## True False
+    OUTDIR = os.path.join(str(sys_dir), "output", "test_vz_ui", "")
+    os.makedirs(OUTDIR, exist_ok=True)
     
-    mabiki = 1 ##
-    exe_pca, n_com = False, 6 ## True False
-    exe_mt     = False ## True False
-    calc_stats = True ## True False
-    importance = True ## True False
-    
-    if not(title[-3:]=='_wv'): fea, tar, df, Ql, Qn,_ = AFD.PrepareData(title)
-    if    (title[-3:]=='_wv'): df, tar, fea, Ql, Qn  = prepare_wave_data(title)
-    
-    df = df[::mabiki]
-    
-    if   (tar[0] in Ql):
-        Ql.remove(tar[0])
-        Ql = tar + Ql[:64]##
-        Qn = Qn[:64]##
-    elif (tar[0] in Qn):
-        Qn.remove(tar[0])
-        Qn = tar + Qn[:64]##
-        Ql = Ql[:64]##
-    ##:if
-    
-    print("df:", len(df), ",", len(df.columns))##
-    print("target :", tar)##
-    print("feature:", len(fea), fea)##
-    print("IsQualittv:", len(Ql), Ql)##
-    print("IsQuanttv :", len(Qn), Qn)##
-    
-    print()
-    print(dt.datetime.now(),'\n')
-##:if
-
-## 前処理
-if (__name__ == "__main__"):
-    print(dt.datetime.now(),'\n')
-    import AnalyzeFunctionsUS as AFU
-    
-    if (exe_pca): ## PCA
-        title = title + "(pca)"
-        fea_ql, fea_qn = copy.deepcopy(Ql), copy.deepcopy(Qn)
-        if (tar[0] in fea_ql): fea_ql.remove(tar[0])
-        if (tar[0] in fea_qn): fea_qn.remove(tar[0])
-        
-        _,df_pca,_ = AFU.PrimaryComponentAnalysis(df[fea_qn], n_com)
-        
-        if ('WVID' in df.columns):
-            df = pd.concat([df[['WVID', 'WVPT']], df[fea_ql], df_pca, df[tar]], axis=1)
-        else:
-            df = pd.concat([df[fea_ql], df_pca, df[tar]], axis=1)
-        ##:if
-        
-        if (tar[0] in Qn):
-            Qn  = copy.deepcopy(list(df_pca.columns) + tar)
-            fea = fea_ql + Qn[:-1]
-        else:
-            Qn  = copy.deepcopy(list(df_pca.columns))
-            fea = fea_ql + Qn
-        ##:if
-    ##:if
-    
-    if (exe_mt): ## MT
-        title = title + "(mt)"
-        Ql_fea = [s for s in Ql if (s != tar[0])]
-        Qn_fea = [s for s in Qn if (s != tar[0])]
-        
-        dic_us  = AFU.mahalanobis_unitspace(df[Qn_fea])
-        _,df_sn = AFU.mahalanobis_distance(dic_us, df[Qn_fea])
-        
-        for c in Qn_fea+['sn_max_val']: df_sn[c].mask(df_sn[c] < 0, 0, inplace=True)##
-        for c in Qn_fea: df_sn.rename(columns={c: c+'_sn'}, inplace=True)
-        
-        if ('WVID' in df.columns):
-            df = pd.concat([df[['WVID', 'WVPT']], df[tar+Ql_fea], df_sn], axis=1)
-        else:
-            df = pd.concat([df[tar+Ql_fea+Qn_fea], df_sn], axis=1)
-        ##:if
-        
-        Ql.append('sn_max_col')
-        Qn.insert(0, 'm_dis')
-        
-        df['m_dis_outlier'] = [0 if (s <= df['m_dis'].quantile(0.75)) else 1 for s in df['m_dis']]##
-        Ql.append('m_dis_outlier')##
-        ##df = df.query('m_dis_outlier==0')####
-        ##title = title + "(rm_outlier)"####
-    ##:if
-    
-    print()
-    print(dt.datetime.now(),'\n')
-##:if
-
-## 統計量・Importance
-if (__name__ == "__main__") and (calc_stats):
-    print(dt.datetime.now(),'\n')
-    import AnalyzeFunctionsPP as AFP
-    
-    AFP.CALC_STATS(df.dropna(subset=Qn), Ql, Qn, {"outdir": OUTDIR, "show": True, "save": True, "title": title, "pca": True, "importance": True})
-    
-    print()
-    print(dt.datetime.now(),'\n')
-##:if
-
-## 可視化（波形重ね合わせ）
-if (__name__ == "__main__") and (gen_layer):
-    print(dt.datetime.now(),'\n')
-    
-    fig = gen_interact_layered_wave(df, Ql, Qn, tar[0], {"title": title
-    , "ql_to_v_cl": Ql[:2]})## クラスごとにプロット
-    
-    if (save_plot): plotly.offline.plot(fig, auto_open=False, filename=OUTDIR+title+'_Layered.html')
-    if (plot_show=='layer'): fig.show()
-    
-    print()
-    print(dt.datetime.now(),'\n')
-##:if
-
-## 可視化（箱ひげ→分布）
-if (__name__ == "__main__") and (gen_dist):
-    print(dt.datetime.now(),'\n')
-    
-    Ql_bx = ['WVID']+Ql if ('WVID' in df.columns) else Ql
-    df_bx = df.query('WVID != -1') if ('WVID' in df.columns) else df
-    
-    fig = AFVU.gen_interact_dist(df_bx, Ql_bx, Qn, tar[0], {"title": title})
-    
-    if (save_plot): plotly.offline.plot(fig, auto_open=False, filename=OUTDIR+title+'_Dist.html')
-    if (plot_show=='dist'): fig.show()
-    
-    print()
-    print(dt.datetime.now(),'\n')
-##:if
-
-## 可視化（散布図→変数間の関係性）
-if (__name__ == "__main__") and (gen_scat):
-    print(dt.datetime.now(),'\n')
-    
-    fig = AFVU.gen_interact_scatter(df, Ql, Qn, tar[0], {"title": title})
-    
-    if (save_plot): plotly.offline.plot(fig, auto_open=False, filename=OUTDIR+title+'_Scatter.html')
-    if (plot_show=='scat'): fig.show()
-    
-    print()
-    print(dt.datetime.now(),'\n')
-##:if
-
-## 可視化（折れ線→時系列・値順の傾向）
-if (__name__ == "__main__") and (gen_line):
-    print(dt.datetime.now(),'\n')
-    
-    fig = AFVU.gen_interact_linechart(df, Ql, Qn, tar[0], {"title": title})
-    
-    if (save_plot): plotly.offline.plot(fig, auto_open=False, filename=OUTDIR+title+'_Line.html')
-    if (plot_show=='line'): fig.show()
-    
-    print()
-    print(dt.datetime.now(),'\n')
+    for name_, func_ in [("Dist", gen_interact_dist), ("Scatter", gen_interact_scatter), ("Line", gen_interact_linechart)]:
+        fig = func_(df.copy(), Ql, Qn, tar, {"title": "Wine"})
+        plotly.offline.plot(fig, auto_open=False, filename=OUTDIR+"Wine_"+name_+".html")
+        print(name_, type(fig).__name__, len(fig.data))
+    ##:for
 ##:if
 ########################################

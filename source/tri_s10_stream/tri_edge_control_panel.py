@@ -4,7 +4,8 @@
 """
 ########################################
 # TriEdge Control Panel
-# Ver: 02.d.20260430    By: IWATA,Y.
+# Ver: 02.e.20261108    By: IWATA, Y.'s Agent AI
+# Mod: pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string を削除。動作は変えない）
 ########################################
 """
 MODULE_NAME = "UI"
@@ -16,7 +17,6 @@ import subprocess
 import sys
 import time
 import tkinter as tk
-import traceback
 
 """external library"""
 ## NOT Use

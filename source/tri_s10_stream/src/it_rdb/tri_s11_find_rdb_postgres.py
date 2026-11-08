@@ -4,8 +4,8 @@
 """
 ########################################
 # Find Trigger Module [PostgreSQL]
-# Ver: 02.g.20261102    By: IWATA, Y.'s Agent AI
-# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
+# Ver: 02.i.20261108    By: IWATA, Y.'s Agent AI
+# Mod: pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string を削除。動作は変えない）
 ########################################
 上位 DB（PostgreSQL）に追記されたデータを、Stream へ取り込む入口
 
@@ -13,7 +13,7 @@
 f_table_diff_bulk_trigger  # テーブルの差分を定期的に取得し、キューに流す。
 
 位置づけ: 他システムが書き込むテーブルのデータを、エッジ側の後続処理（SMB・FTP 送信等）へ渡す。
-設計意図: 前回の取得位置を SQLite に保存し、再起動しても取りこぼし・重複を抑える。1 回の取得件数を max_row で制限し、大量の追記は複数周期に分けて追いつく。
+設計意図: 前回の取得位置を SQLite に保存し、再起動しても取りこぼし・重複を抑える。1 回の取得件数を max_row で制限し、大量の追記は複数周期に分けて追いつく。接続に失敗したり途中で切れたりしたら、つなぎ直して読み直し（リトライ）、続けて失敗したら接続できない（not_connectable）とする。接続できない状態の記録・再接続の間隔は tri_s01_connect_state に任せる。
 前提・制約: key 列は単調増加すること（更新時刻など）。値が過去に戻る行は取得されない。
 """
 MODULE_NAME = "FIND_RDB"
@@ -21,17 +21,16 @@ MODULE_NAME = "FIND_RDB"
 """standard library"""
 from   datetime import datetime  as dt
 from   datetime import timedelta as td
-import json
 import os
 import queue
 import sys
 import threading
 import time
 import traceback
-from   typing   import Any, Dict, List, Tuple, Sequence, Optional
+from   typing   import Any, Dict, Optional
 
 """external library"""
-import pg8000.dbapi as pg_dbapi
+## pg8000（PostgreSQL）は tri_s19_rdb_postgres が使う
 
 """[Bootstrap] Resolve Path and Import Base Module"""
 try:
@@ -70,9 +69,9 @@ except ModuleNotFoundError:
         sys.exit(1)
 
 """local module"""
-import src.tri_s01_error_if as err
 from   src.tri_s01_error_if import ErrorIF, SIGNAL_STOP
 import src.it_rdb.tri_s19_rdb_postgres as rdb
+from   src.tri_s01_connect_state import ConnectState
 import src.tri_s19_util as utl
 
 """system dir, file"""
@@ -113,6 +112,13 @@ def f_table_diff_bulk_trigger(
     """
     Postgreから差分を取得しキューに流す
     Mod: 2026.05.12    By: IWATA,Y.
+
+    [接続の扱い]
+        リトライ: 接続の失敗（つながらない・途中で切れた）は、retry_wait_sec ごとにつなぎ直して読み直す（このトリガーの中だけ）
+            連続 retry_max 回失敗したら、接続できない（not_connectable）と判定して ConnectState へ報告する（読めたら回数を 0 に戻す）
+            接続は生きているのに失敗したとき（SQL の誤り等）は、今までどおり ErrorIF へ報告して次の周期に進む
+        再接続: 接続できない間は reconnect_interval_sec ごとに試み、結果を ConnectState へ報告する
+        接続の状態（ConnectState が登録。FIND_RDB）: connect_state / not_connectable_since / reconnect_fail_count / total_not_connectable
     """
     TRIGGER_NAME = "f_table_diff_bulk_trigger"
     
@@ -135,8 +141,15 @@ def f_table_diff_bulk_trigger(
         interval_sec      = config.get("interval_sec", 10)
         max_row           = config.get("max_row", 1000)
         reset_state       = config.get("reset_state", False)
-        pg_reconnect_max  = int(config.get("pg_reconnect_max" , 3))
-        pg_reconnect_wait = float(config.get("pg_reconnect_wait", 5.0))
+        retry_max              = int(config.get("retry_max", 3))
+        retry_wait_sec         = float(config.get("retry_wait_sec", 5.0))
+        reconnect_interval_sec = float(config.get("reconnect_interval_sec", 10.0))
+        if retry_max < 1 or retry_wait_sec < 0:
+            raise ValueError(f"config['retry_max'] must be >= 1 and config['retry_wait_sec'] >= 0. Got: {retry_max} / {retry_wait_sec}")
+        pg_target = f"{config.get('pg_host')}:{config.get('pg_port')}/{config.get('pg_dbname')}"
+        base.output_log(MODULE_NAME,
+            f"{TRIGGER_NAME} pg={pg_target}  retry_max={retry_max}  retry_wait_sec={retry_wait_sec}  "
+            f"reconnect_interval_sec={reconnect_interval_sec}", log_file)
 
         # --- SQLite 状態DB の準備 ---
         db_path     = os.path.join(work_db_dir, f"{TRIGGER_NAME}_state.db")
@@ -152,7 +165,7 @@ def f_table_diff_bulk_trigger(
         ''')
         if reset_state:
             cur_sqlite.execute('DELETE FROM table_state')
-            base.output_log(MODULE_NAME, f"!!! WARNING !!! State DB Reset by config 'reset_state': True")
+            base.output_log(MODULE_NAME, "!!! WARNING !!! State DB Reset by config 'reset_state': True")
         conn_sqlite.commit()
         base.output_log(MODULE_NAME, f"{TRIGGER_NAME} Initialized. DB: {db_path}")
         
@@ -177,88 +190,190 @@ def f_table_diff_bulk_trigger(
             base.output_log(MODULE_NAME, f"target_tables={target_tables}")
         ##:for
 
-        # --- PostgreSQL 初期接続 ---
-        conn_pg = None
-        conn_pg = rdb.pg_connect_if_needed(conn_pg, config, TRIGGER_NAME, log_file)
-
     except Exception as e:
         ErrorIF.report_exception(e, phase="startup", category="config", trigger_id=TRIGGER_NAME, log_file=log_file)
         stop_event.set()
         return None
     ##:try
 
-    """======== LOOP START ========"""
+    """======== 接続の状態（判定・リトライはこのトリガー。記録・再接続の間隔・通知は ConnectState） ========"""
+    conn_pg    = None
+    conn_state = ConnectState(TRIGGER_NAME, pg_target, reconnect_interval_sec, MODULE_NAME, log_file)
+    fail_count = 0      # 連続失敗の回数（判定に使う。このトリガーの中だけで数える）
+
+    def _responsive_wait(seconds: float) -> None:
+        """stop_event を見ながら細かく待つ"""
+        _end = time.time() + seconds
+        while time.time() < _end and not stop_event.is_set():
+            time.sleep(min(0.05, max(0.0, _end - time.time())))
+
+    def _drop_pg() -> None:
+        """接続を閉じる"""
+        nonlocal conn_pg
+        if conn_pg is not None:
+            try: conn_pg.close()
+            except Exception: pass
+        conn_pg = None
+
+    def _conn_lost() -> bool:
+        """失敗のあと、接続が切れたかを確かめる（ロールバックしてから SELECT 1）。切れていれば True"""
+        if conn_pg is None:
+            return True
+        try:
+            conn_pg.rollback()
+        except Exception:
+            return True
+        return not rdb.pg_ping(conn_pg)
+
+    def _try_pg() -> Optional[BaseException]:
+        """接続を確かめ、切れていればつなぎ直す（1回）。成功なら None、失敗ならその例外"""
+        nonlocal conn_pg
+        try:
+            conn_pg = rdb.pg_connect_if_needed(conn_pg, config, TRIGGER_NAME, log_file)
+            return None
+        except Exception as e:
+            _drop_pg()
+            return e
+
+    def _count_fail(e: BaseException, what: str) -> bool:
+        """
+        接続の失敗を1回数える。連続 retry_max 回で not_connectable と判定して ConnectState へ報告し、False を返す
+        （続けるなら retry_wait_sec 待って True。リトライは画面のみに出し、ConnectState・ErrorIF へは報告しない）
+        """
+        nonlocal fail_count
+        _drop_pg()
+        fail_count += 1
+        if fail_count >= retry_max:
+            conn_state.set_not_connectable(e)   # 判定：連続 retry_max 回の失敗
+            return False
+        if stop_event.is_set():
+            return False
+        base.output_log(MODULE_NAME,
+            f"{TRIGGER_NAME} Retry ({fail_count}/{retry_max}). {what}  {pg_target}  ({type(e).__name__}: {e})")
+        _responsive_wait(retry_wait_sec)
+        return True
+
+    def _run_with_retry(work, what: str) -> bool:
+        """
+        work() を実行する。接続の失敗（つながらない・途中で切れた）は retry_wait_sec ごとにつなぎ直して、最初からやり直す（リトライ）。
+        接続は生きているのに失敗したとき（データのエラー）は、例外のまま返す。not_connectable になったら False
+        """
+        nonlocal fail_count
+        while True:
+            e = _try_pg()
+            if e is None:
+                try:
+                    work()
+                    fail_count = 0
+                    return True
+                except Exception as ex:
+                    if not _conn_lost():
+                        raise
+                    e = ex
+            if not _count_fail(e, what):
+                return False
+
+    def _reconnect_if_due() -> None:
+        """接続できない間、再接続の間隔が過ぎていれば再接続を試み、結果を ConnectState へ報告する"""
+        nonlocal fail_count
+        if conn_state.should_try_reconnect():
+            e = _try_pg()
+            if e is None:
+                fail_count = 0
+                conn_state.set_connectable()
+            else:
+                conn_state.reconnect_failed(e)
+
+    """初回接続（retry_wait_sec ごとに retry_max 回まで試みる）"""
+    _err: Optional[BaseException] = None
+    for _try in range(1, retry_max + 1):
+        _err = _try_pg()
+        if _err is None:
+            break
+        if _try < retry_max and not stop_event.is_set():
+            base.output_log(MODULE_NAME,       # リトライは画面のみ
+                f"{TRIGGER_NAME} Connect Retry ({_try}/{retry_max}). {pg_target}  ({type(_err).__name__}: {_err})")
+            _responsive_wait(retry_wait_sec)
+    if _err is not None:
+        _sig = ErrorIF.report_exception(_err, phase="startup", category="comm",  # 初回接続の失敗を報告（A-21）
+                                         trigger_id=TRIGGER_NAME, log_file=log_file)
+        if _sig == SIGNAL_STOP:
+            stop_event.set()
+            return None
+        conn_state.set_not_connectable(_err, report=False)   # ErrorIF へは上で phase=startup として通知済み
+
     count = 0
+
+    def _fetch_tables() -> None:
+        """全テーブルの差分を取得してキューに流し、SQLite に取得位置を保存する（接続の失敗は例外のまま返す）"""
+        nonlocal count
+        for t_info in target_tables:
+            _sch_tab, _sch_tab_pg, _key, _key_pg, _state = t_info
+            
+            # 1. 差分データを取得
+            rows = rdb.pg_fetch_diff(conn_pg, _sch_tab_pg, _key_pg, _state, limit=max_row)
+            if not rows:
+                continue
+            
+            # 2. データの最終行のタイムスタンプを取得
+            new_last_ts = rows[-1].get(_key)
+            if not new_last_ts:
+                new_last_ts = rows[-1].get(_key.lower())
+            t_info[4] = new_last_ts
+
+            # 3. メタ情報付きでキューに送信
+            dt_exec_str = dt.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+            dt_fr_str   = _any_dt_to_str(_state)[:15]
+            dt_to_str   = _any_dt_to_str(new_last_ts)[:15]
+            payload = [{
+                "col_def"   : col_def,
+                "table_name": _sch_tab,
+                "columns"   : list(rows[0].keys()),
+                "rows"      : rows,
+                "dt_fr": _state     , "dt_fr_str": dt_fr_str,
+                "dt_to": new_last_ts, "dt_to_str": dt_to_str,
+                "dt_fr_to_str": f"[{dt_fr_str}_to_{dt_to_str}]",
+                "dt_exec_str_yyyymm"             : dt_exec_str[:6],
+                "dt_exec_str_yyyymmdd"           : dt_exec_str[:8],
+                "dt_exec_str_yyyymmdd_hhmmss"    : dt_exec_str[:15],
+                "dt_exec_str_yyyymmdd_hhmmss_000": dt_exec_str,
+            }]
+            queue_out.put((count, payload))
+            
+            # 4. SQLiteに状態保存
+            cur_sqlite.execute('''
+                INSERT INTO table_state (target_table, last_ts) 
+                VALUES (?, ?) 
+                ON CONFLICT(target_table) DO UPDATE SET last_ts=excluded.last_ts
+            ''', (_sch_tab, str(new_last_ts)))
+            conn_sqlite.commit()
+            
+            time.sleep(0.5)
+            queue_out.put((count, ['____']))
+            base.output_log(MODULE_NAME, f"Queued {len(rows)} rows from {_sch_tab_pg} between {_state} ~ {new_last_ts}.")
+            
+            count += 1
+            time.sleep(0.5)
+
+    """======== LOOP START ========"""
     while not stop_event.is_set():
         try:
             # SQLite 接続チェック＆再接続
             conn_sqlite = utl.check_and_reconnect_db(conn_sqlite, db_path)
             cur_sqlite  = conn_sqlite.cursor()
 
-            # PostgreSQL 接続チェック＆再接続
-            for _retry in range(pg_reconnect_max + 1):
-                try:
-                    conn_pg = rdb.pg_connect_if_needed(conn_pg, config, TRIGGER_NAME, log_file)
-                    break
-                except pg_dbapi.DatabaseError as e_conn:
-                    base.output_log(MODULE_NAME,
-                        f"PostgreSQL 接続失敗 ({_retry+1}/{pg_reconnect_max}): {e_conn}", log_file)
-                    if _retry >= pg_reconnect_max:
-                        raise
-                    time.sleep(pg_reconnect_wait)
-                    conn_pg = None
-            ##:for
-
-            for t_info in target_tables:
-                _sch_tab, _sch_tab_pg, _key, _key_pg, _state = t_info
-                
-                # 1. 差分データを取得
-                rows = rdb.pg_fetch_diff(conn_pg, _sch_tab_pg, _key_pg, _state, limit=max_row)
-                if not rows:
+            # 接続できない間：再接続の間隔ごとに再接続を試みる（読まない）
+            if not conn_state.is_connectable():
+                _reconnect_if_due()
+                if not conn_state.is_connectable():
+                    ErrorIF.emit_summary_if_needed()
+                    _responsive_wait(min(2.0, reconnect_interval_sec))
                     continue
-                
-                # 2. データの最終行のタイムスタンプを取得
-                new_last_ts = rows[-1].get(_key)
-                if not new_last_ts:
-                    new_last_ts = rows[-1].get(_key.lower())
-                t_info[4] = new_last_ts
 
-                # 3. メタ情報付きでキューに送信
-                dt_exec_str = dt.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
-                dt_fr_str   = _any_dt_to_str(_state)[:15]
-                dt_to_str   = _any_dt_to_str(new_last_ts)[:15]
-                payload = [{
-                    "col_def"   : col_def,
-                    "table_name": _sch_tab,
-                    "columns"   : list(rows[0].keys()),
-                    "rows"      : rows,
-                    "dt_fr": _state     , "dt_fr_str": dt_fr_str,
-                    "dt_to": new_last_ts, "dt_to_str": dt_to_str,
-                    "dt_fr_to_str": f"[{dt_fr_str}_to_{dt_to_str}]",
-                    "dt_exec_str_yyyymm"             : dt_exec_str[:6],
-                    "dt_exec_str_yyyymmdd"           : dt_exec_str[:8],
-                    "dt_exec_str_yyyymmdd_hhmmss"    : dt_exec_str[:15],
-                    "dt_exec_str_yyyymmdd_hhmmss_000": dt_exec_str,
-                }]
-                queue_out.put((count, payload))
-                
-                # 4. SQLiteに状態保存
-                cur_sqlite.execute('''
-                    INSERT INTO table_state (target_table, last_ts) 
-                    VALUES (?, ?) 
-                    ON CONFLICT(target_table) DO UPDATE SET last_ts=excluded.last_ts
-                ''', (_sch_tab, str(new_last_ts)))
-                conn_sqlite.commit()
-                
-                time.sleep(0.5)
-                queue_out.put((count, ['____']))
-                base.output_log(MODULE_NAME, f"Queued {len(rows)} rows from {_sch_tab_pg} between {_state} ~ {new_last_ts}.")
-                
-                count += 1
-                time.sleep(0.5)
-            ##:for
-            
-            time.sleep(interval_sec)
+            # PostgreSQL から差分を取得（接続の失敗はリトライ。連続 retry_max 回で not_connectable）
+            if not _run_with_retry(_fetch_tables, "Fetch Diff."):
+                continue
+            _responsive_wait(interval_sec)
 
         except Exception as e:
             _sig = ErrorIF.report_exception(e, phase="loop", category="io", trigger_id=TRIGGER_NAME, log_file=log_file)
@@ -287,5 +402,5 @@ def f_table_diff_bulk_trigger(
 ########################################
 if __name__ == "__main__":
     print(f"{MODULE_NAME} Run Standalone.")
-    base.output_log(MODULE_NAME, f"test show Log")
+    base.output_log(MODULE_NAME, "test show Log")
     base.output_log(MODULE_NAME, f"test save Log  {log_file}", log_file)

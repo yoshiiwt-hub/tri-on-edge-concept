@@ -4,32 +4,31 @@
 """
 ########################################
 # Act Trigger Module [Connection Template]
-# Ver: 06.b.20261102    By: IWATA, Y.'s Agent AI
-# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
+# Ver: 06.d.20261108    By: IWATA, Y.'s Agent AI
+# Mod: pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string を削除。動作は変えない）
 ########################################
 外部のシステムへ接続して送る Act を作るときの雛形
 
 主要関数:
-a_template_conn_trigger  # 接続・送信・切断の流れと、オフライン時の扱いを備えた Act の雛形。
+a_template_conn_trigger  # 接続・送信・切断の流れと、接続できないとき（not_connectable）の扱いを備えた Act の雛形。
 
 位置づけ: 新しい接続先へ送る Act は、この雛形の _connect / _send / _close を書き換えて作る。キューの扱いだけの雛形は tri_s12_act_tmpl_queue。
-設計意図: 接続が切れたときのオフライン移行・再接続・セグメントのスキップを雛形に含め、新しい Act でも同じ振る舞いになるようにする。
+設計意図: 判定（何回失敗したら接続できないとするか）・リトライ・接続できない間の扱いはトリガーに書き、状態の記録・再接続の間隔・
+          通知・ログは共通の tri_s01_connect_state（ConnectState）に任せる。新しい Act でも同じ振る舞いになるよう、その見本を含める。
+          システムのオフラインモード（base.get_mode_is_offline）のときの挙動は、トリガーごとにスタブ（_on_system_offline）に書く。
 前提・制約: 作り方は『新規トリガー開発ガイドライン』を参照。
 """
 MODULE_NAME = "ACT_Connect"
 
 """standard library"""
-import csv
 from   datetime import datetime as dt
-import json
 import os
-import socket
 import queue
 import sys
 import threading
 import time
 import traceback
-from   typing   import Any, Dict, List, Tuple, Sequence, Optional
+from   typing   import Any, Dict, Optional
 
 """external library"""
 ## Not Using
@@ -71,8 +70,8 @@ except ModuleNotFoundError:
         sys.exit(1)
 
 """local module"""
-import src.tri_s01_error_if       as err
 from   src.tri_s01_error_if       import ErrorIF, SIGNAL_STOP
+from   src.tri_s01_connect_state  import ConnectState
 
 """system dir, file"""
 system_root = base.get_system_root()
@@ -101,22 +100,28 @@ def a_template_conn_trigger(
 ) -> None:
     """
     サーバ等外部システム接続型 ActTrigger のテンプレート
-    Mod: 2026.05.18    By: IWATA,Y.
+    Mod: 2026.11.06    By: IWATA, Y.'s Agent AI（接続できない状態の管理を ConnectState に置き換え）
 
-    [設定]（旧モジュール Docstring から移動。この雛形には設定例が無いため、ここに記載する）
+    [設定]（この雛形には設定例が無いため、ここに記載する）
         server_ip              : 接続先サーバの IP アドレス（デフォルト: "127.0.0.1"）
         server_port            : 接続先サーバのポート番号（デフォルト: 9000）
         timeout_sec            : 接続タイムアウト秒数（デフォルト: 5.0）
-        reconnect_interval_sec : 再接続インターバル秒数（デフォルト: 5.0）
+        retry_max              : 連続でこの回数失敗したら、接続できない（not_connectable）とする（デフォルト: 3）
+        retry_wait_sec         : リトライ（接続し直して送り直す）の間隔秒数（デフォルト: 1.0）
+        reconnect_interval_sec : 接続できない間に、再接続を試みる間隔秒数（デフォルト: 5.0）
+        not_connectable_action : 接続できない間に届いたセグメントの扱い（デフォルト: "skip"）
+                                 "skip" = 送らずにスキップする / "wait" = 再接続できるまで待つ
         ack_mode               : 送信ごとに ACK を待つか（デフォルト: False）
-        skip_on_offline        : オフライン時にセグメントをスキップするか（デフォルト: True）
         encode                 : 文字エンコーディング（デフォルト: "utf-8"）
         sep                    : データ区切り文字（デフォルト: "\n"）
         chunk                  : 受信チャンクサイズ バイト（デフォルト: 1024）
+    [接続できない状態の扱い]
+        判定（連続失敗の回数）とリトライはこのトリガーで行う（connect_state には報告しない）。
+        連続 retry_max 回失敗したら conn_state.set_not_connectable() で報告し、以降は reconnect_interval_sec ごとに
+        再接続を試みて、結果を set_connectable() / reconnect_failed() で報告する。
     """
     TRIGGER_NAME = "a_template_conn_trigger"  ####
-    _SIG_OFFLINE = f"ConnectionFailed.comm.loop.{TRIGGER_NAME}"
-    
+
     # ---- HELPER FUNCS ----
     def _connect(ip: str, port: int, timeout: float):
         """#### 接続処理を実装 ####"""
@@ -130,26 +135,31 @@ def a_template_conn_trigger(
         """#### 切断処理を実装 ####"""
         raise NotImplementedError  ####
 
+    def _on_system_offline(segment: list, seg_id: Any) -> bool:
+        """
+        #### システムのオフラインモード（base.get_mode_is_offline() が True）のときの挙動を実装 ####
+        戻り値: True = このセグメントを送らない（呼び出し側でスキップする）/ False = いつもどおり送る
+        例: 外へ送らない Act なら、件数を数えて True を返す
+        """
+        return False  ####
+
     def _responsive_wait(seconds: float) -> None:
         """stop_event を見ながら細かく待つ（即座に停止へ反応できるように。tri_s11_find_slmp.py 等と同様）"""
         _wait_end = time.time() + seconds
         while time.time() < _wait_end and not stop_event.is_set():
             time.sleep(min(0.05, max(0.0, _wait_end - time.time())))
-    
-    
+
+
     # ---- CONN INIT（接続オブジェクト・状態変数）----
-    conn                 = None
-    is_online            = False
-    reconnect_fail_count = 0
-    last_restart_time    = 0.0
-    skipped_seg_count    = 0
+    conn              = None
+    fail_count        = 0      # 連続失敗の回数（判定に使う。トリガーの中だけで数える）
+    skipped_seg_count = 0
 
     """======== LOOP INIT ========"""
     try:
         base.output_log(MODULE_NAME, f"{TRIGGER_NAME} Start.", log_file)
 
         n_col_def = len(col_def)
-        col_keys  = [col_def[k][0] for k in sorted(col_def.keys())]
 
         # ---- LOOP INIT（固有設定）####
         pass  ####
@@ -157,19 +167,82 @@ def a_template_conn_trigger(
         # 接続設定
         server_ip   = str(config.get("server_ip", "127.0.0.1"))
         server_port = int(config.get("server_port", 9000))
-        timeout_sec        = float(config.get("timeout_sec", 5.0))
-        reconnect_interval_sec = float(config.get("reconnect_interval_sec", 5.0))
-        ack_mode        = bool(config.get("ack_mode", False))
-        skip_on_offline = bool(config.get("skip_on_offline", True))
+        timeout_sec = float(config.get("timeout_sec", 5.0))
+        ack_mode    = bool(config.get("ack_mode", False))
         encode = str(config.get("encode", "utf-8"))
-        sep    = str(config.get("sep", "\n"))
         chunk  = int(config.get("chunk", 1024))
-        
+
+        # 接続できない状態の扱い（判定・リトライ・接続できない間の扱いはトリガーで決める）
+        retry_max              = int(config.get("retry_max", 3))
+        retry_wait_sec         = float(config.get("retry_wait_sec", 1.0))
+        reconnect_interval_sec = float(config.get("reconnect_interval_sec", 5.0))
+        not_connectable_action = str(config.get("not_connectable_action", "skip")).strip().lower()
+        if retry_max < 1 or retry_wait_sec < 0:
+            raise ValueError(f"config['retry_max'] must be >= 1 and config['retry_wait_sec'] >= 0. Got: {retry_max} / {retry_wait_sec}")
+        if not_connectable_action not in ("skip", "wait"):
+            raise ValueError(f"config['not_connectable_action'] must be 'skip' / 'wait'. Got: {not_connectable_action!r}")
+        conn_state = ConnectState(TRIGGER_NAME, f"{server_ip}:{server_port}", reconnect_interval_sec, MODULE_NAME, log_file)
+
     except Exception as e:
         ErrorIF.report_exception(e, phase="startup", category="config",
                                  trigger_id=TRIGGER_NAME, log_file=log_file)
         stop_event.set()
         return None
+
+    # ---- 接続・リトライ（判定はトリガー。connect_state へ報告するのは移行・再接続の結果だけ）----
+    def _drop_conn() -> None:
+        nonlocal conn
+        if conn:
+            try:   _close(conn)  #### DISCONNECT ####
+            except Exception: pass
+        conn = None
+
+    def _try_connect() -> Optional[BaseException]:
+        """接続を1回試みる。成功なら None、失敗ならその例外"""
+        nonlocal conn
+        try:
+            conn = _connect(server_ip, server_port, timeout_sec)  #### CONNECT ####
+            return None
+        except Exception as e:
+            conn = None
+            return e
+
+    def _send_with_retry(send_str: str) -> bool:
+        """
+        送る。失敗したら retry_wait_sec ごとにリトライ（接続し直して送り直す）する。
+        連続 retry_max 回失敗したら not_connectable と判定して報告し、False を返す（送れたら連続失敗の回数を 0 に戻す）
+        """
+        nonlocal fail_count
+        while not stop_event.is_set():
+            e = _try_connect() if conn is None else None
+            if e is None:
+                try:
+                    _send(conn, send_str, encode, ack_mode, chunk)  #### SEND ####
+                    fail_count = 0
+                    return True
+                except Exception as e_send:
+                    e = e_send
+                    _drop_conn()
+            fail_count += 1
+            if fail_count >= retry_max:
+                conn_state.set_not_connectable(e)   # 判定：連続 retry_max 回の失敗
+                return False
+            base.output_log(MODULE_NAME,            # リトライは画面のみ（connect_state・ErrorIF へは報告しない）
+                f"{TRIGGER_NAME} Retry ({fail_count}/{retry_max}). {server_ip}:{server_port}  ({type(e).__name__}: {e})")
+            _responsive_wait(retry_wait_sec)
+        return False
+
+    def _reconnect_if_due() -> None:
+        """接続できない間、再接続の間隔が過ぎていれば1回試みて、結果を connect_state へ報告する"""
+        nonlocal fail_count
+        if not conn_state.should_try_reconnect():
+            return
+        e = _try_connect()
+        if e is None:
+            fail_count = 0
+            conn_state.set_connectable()
+        else:
+            conn_state.reconnect_failed(e)
 
     """======== LOOP START ========"""
     while True:
@@ -177,22 +250,7 @@ def a_template_conn_trigger(
             segment = post_queue.get(timeout=1.0)
 
         except queue.Empty:
-            if not is_online:
-                _now = time.time()
-                if (_now - last_restart_time) > reconnect_interval_sec:
-                    try:
-                        conn = _connect(server_ip, server_port, timeout_sec)  #### CONNECT ####
-                        is_online = True; reconnect_fail_count = 0
-                        last_restart_time = _now
-                    except Exception as e:
-                        reconnect_fail_count += 1
-                        ErrorIF.report_event({
-                            "trigger_id": TRIGGER_NAME, "phase": "loop", "category": "comm",
-                            "exc_type": type(e).__name__,
-                            "message": f"Re-Connect Failed ({reconnect_fail_count}). {server_ip}:{server_port}",
-                            "signature": _SIG_OFFLINE,
-                        })
-                        last_restart_time = _now
+            _reconnect_if_due()
             ErrorIF.emit_summary_if_needed()
             if stop_event.is_set() and post_queue.qsize()==0 and getattr(post_queue,"unfinished_tasks",0)==0:
                 break
@@ -209,34 +267,24 @@ def a_template_conn_trigger(
             if not segment: continue
             if isinstance(segment[0][-1], list) and segment[0][-1][0] is None: continue
 
-            # --- オフライン処理（共通） ---
-            if not is_online:
-                if skip_on_offline:
+            # --- システムのオフラインモード（挙動はスタブ _on_system_offline に書く）---
+            if base.get_mode_is_offline() and _on_system_offline(segment, seg_id):
+                continue
+
+            # --- 接続できないとき（not_connectable）の扱い ---
+            _reconnect_if_due()
+            if not conn_state.is_connectable():
+                if not_connectable_action == "skip":
                     skipped_seg_count += 1; continue
-                else:
-                    while not is_online and not stop_event.is_set():
-                        try:
-                            conn = _connect(server_ip, server_port, timeout_sec)  #### CONNECT ####
-                            is_online = True; reconnect_fail_count = 0
-                        except Exception:
-                            reconnect_fail_count += 1
-                            _responsive_wait(reconnect_interval_sec)
-                    if stop_event.is_set(): break
+                while not conn_state.is_connectable() and not stop_event.is_set():   # "wait"
+                    _reconnect_if_due()
+                    _responsive_wait(min(1.0, reconnect_interval_sec))
+                if stop_event.is_set(): break
 
             # ---- SEND（固有：ペイロード構築＋送信）####
             send_str = ""  ####
-            try:
-                _ack = _send(conn, send_str, encode, ack_mode, chunk)  #### SEND ####
-
-            except Exception as e:
-                _sig = ErrorIF.report_exception(e, phase="loop", category="comm", trigger_id=TRIGGER_NAME, log_file=log_file)
-                
-                if conn: _close(conn)  #### DISCONNECT ####
-                conn = None
-                
-                is_online = False; reconnect_fail_count = 0
-                last_restart_time = time.time()
-                if _sig == SIGNAL_STOP: stop_event.set()
+            if not _send_with_retry(send_str):
+                skipped_seg_count += 1   # 送れなかったセグメント（送り直す場合は tri_s12_act_socket の resend_max を参照）
 
         except Exception as e:
             _sig = ErrorIF.report_exception(e, phase="loop", category="data",
@@ -248,9 +296,9 @@ def a_template_conn_trigger(
             post_queue.task_done()
 
     """======== LOOP END ========"""
-    
-    if conn: _close(conn)  #### DISCONNECT ####
-    
+
+    _drop_conn()
+
     if skipped_seg_count > 0:
         base.output_log(MODULE_NAME,
             f"WARNING  {TRIGGER_NAME} Stopped with {skipped_seg_count} skipped.", log_file)
@@ -267,6 +315,6 @@ a_template_conn_trigger.CUT_LAST_ROW = True  # 終点行（変化後）を core 
 # Entry Point (for Debug)
 ########################################
 if __name__ == "__main__":
-    base.output_log(MODULE_NAME, f"Run Standalone.")
-    base.output_log(MODULE_NAME, f"test show Log")
+    base.output_log(MODULE_NAME, "Run Standalone.")
+    base.output_log(MODULE_NAME, "test show Log")
     base.output_log(MODULE_NAME, f"test save Log  {log_file}", log_file)

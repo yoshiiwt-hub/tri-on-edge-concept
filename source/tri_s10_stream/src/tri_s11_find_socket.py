@@ -4,8 +4,8 @@
 """
 ########################################
 # Find Trigger Module [Socket]
-# Ver: 06.i.20261102    By: IWATA, Y.'s Agent AI
-# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
+# Ver: 06.k.20261108    By: IWATA, Y.'s Agent AI
+# Mod: pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string を削除。動作は変えない）
 ########################################
 TCP ソケットサーバーに要求を送り、返ってきた値を取り込む入口
 
@@ -13,25 +13,22 @@ TCP ソケットサーバーに要求を送り、返ってきた値を取り込�
 f_socket_client_trigger  # ソケットサーバーに接続して値を定期的に要求し、キューに流す。
 
 位置づけ: 独自のソケットサーバー（他システムやエージェント）から値を受け取る、汎用のクライアント。
-設計意図: 応答を受け取った直後の時刻を取得時刻としてキューに入れ、StreamCore の受信時刻ではなく実際に値を得た時刻でセグメントを作れるようにする（A-7）。接続が切れてもオフラインで待ち、一定間隔で自動的につなぎ直す。
+設計意図: 応答を受け取った直後の時刻を取得時刻としてキューに入れ、StreamCore の受信時刻ではなく実際に値を得た時刻でセグメントを作れるようにする（A-7）。接続の失敗・受信中の切断はその場でつなぎ直し（リトライ）、続けて失敗したら接続できない（not_connectable）として一定間隔で自動的につなぎ直す。接続できない状態の記録・再接続の間隔は tri_s01_connect_state に任せる。
 前提・制約: サーバーは、要求（req_msg）に対して区切り文字（sep）で終わる JSON を返すこと。
 """
 MODULE_NAME = "FIND_Socket"
 
 """standard library"""
-import csv
 from   datetime import datetime as dt
 import json
 import os
 import queue
-import random
-import shutil # copy file
 import socket
 import sys
 import threading
 import time
 import traceback
-from   typing   import Any, Dict, List, Tuple, Sequence, Optional
+from   typing   import Any, Dict
 
 """external library"""
 ## NOT Use
@@ -75,6 +72,7 @@ except ModuleNotFoundError:
 """local module"""
 import src.tri_s01_error_if       as err
 from   src.tri_s01_error_if       import ErrorIF, SIGNAL_STOP
+from   src.tri_s01_connect_state  import ConnectState
 
 """system dir, file"""
 system_root = base.get_system_root()
@@ -103,10 +101,16 @@ def f_socket_client_trigger(
 ) -> None:
     """
     Get Data from Socket Server
-    Mod: 2026.09.30    By: IWATA, Y.'s Agent AI
+    Mod: 2026.11.06    By: IWATA, Y.'s Agent AI（接続できない状態の管理を ConnectState に置き換え）
+
+    [接続できない状態の扱い]
+        接続の失敗・受信中の切断は、retry_wait_sec ごとにその場でつなぎ直す（リトライ。このトリガーの中だけ）。
+        連続 retry_max 回失敗したら、接続できない（not_connectable）と判定して ConnectState へ報告し、
+        以降は reconnect_interval_sec ごとに再接続を試みて、結果を ConnectState へ報告する（その間は値を取り込まない）。
+        受信のタイムアウト（socket.timeout）は失敗に数えない（次の要求へ進む）。
+        接続の状態（ConnectState が登録）: connect_state / not_connectable_since / reconnect_fail_count / total_not_connectable
     """
     TRIGGER_NAME = "f_socket_client_trigger"
-    _SIG_OFFLINE = f"ConnectionFailed.comm.loop.{TRIGGER_NAME}"
 
     def _connect(_ip: str, _port :int, _to :float):
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -141,7 +145,6 @@ def f_socket_client_trigger(
         VERBOSE = config.get("VERBOSE", False)
 
         """ Col Define """
-        key_define   = [col_def[k][0] for k in sorted(col_def.keys())]
         ##dtype_define = [col_def[k][1] for k in sorted(col_def.keys())]
         
         # dtype cast plan
@@ -164,7 +167,17 @@ def f_socket_client_trigger(
         sep     = config.get("sep"    , "\n")
         chunk   = config.get("chunk"  , 1024)
         connect_timeout_sec    = config.get("connect_timeout_sec", 5)
-        reconnect_interval_sec = config.get("reconnect_interval_sec", 10)
+        reconnect_interval_sec = float(config.get("reconnect_interval_sec", 10))
+        retry_max              = int(config.get("retry_max", 3))
+        retry_wait_sec         = float(config.get("retry_wait_sec", 1.0))
+        if retry_max < 1 or retry_wait_sec < 0:
+            raise ValueError(f"config['retry_max'] must be >= 1 and config['retry_wait_sec'] >= 0. Got: {retry_max} / {retry_wait_sec}")
+        base.output_log(MODULE_NAME,
+            f"server_ip={server_ip} server_port={server_port} retry_max={retry_max} retry_wait_sec={retry_wait_sec} "
+            f"reconnect_interval_sec={reconnect_interval_sec}", log_file)
+
+        # 接続の状態（判定・リトライはこのトリガー。記録・再接続の間隔・通知は ConnectState）
+        conn_state = ConnectState(TRIGGER_NAME, f"{server_ip}:{server_port}", reconnect_interval_sec, MODULE_NAME, log_file)
         
     except Exception as e:
         ErrorIF.report_exception(
@@ -178,16 +191,49 @@ def f_socket_client_trigger(
         return None
 
     """======== LOOP INIT ========"""
-    is_online = False
     tcp_socket = None
-    try:
-        tcp_socket = _connect(server_ip, server_port, connect_timeout_sec)
-        is_online  = True
-        base.output_log(MODULE_NAME, f"Socket Comm Connected. {server_ip}:{server_port}", log_file)
-        
-    except Exception as e:
+    fail_count = 0      # 連続失敗の回数（判定に使う。このトリガーの中だけで数える）
+
+    def _drop_socket() -> None:
+        nonlocal tcp_socket
+        if tcp_socket:
+            try:   tcp_socket.close()
+            except Exception: pass
+        tcp_socket = None
+
+    def _on_fail(e: BaseException) -> None:
+        """
+        接続の失敗・受信中の切断を数える。連続 retry_max 回で not_connectable と判定して ConnectState へ報告する。
+        それ未満なら retry_wait_sec 待って、次のループでつなぎ直す（リトライは画面のみ。ConnectState・ErrorIF へは報告しない）
+        """
+        nonlocal fail_count, _rem
+        _drop_socket()
+        _rem = ""   # 前回接続の残骸を持ち越さない（A-13）
+        fail_count += 1
+        if fail_count >= retry_max:
+            conn_state.set_not_connectable(e)   # 判定：連続 retry_max 回の失敗
+            return
+        base.output_log(MODULE_NAME,
+            f"{TRIGGER_NAME} Retry ({fail_count}/{retry_max}). {server_ip}:{server_port}  ({type(e).__name__}: {e})")
+        _responsive_wait(retry_wait_sec)
+
+    # 初回接続（retry_wait_sec ごとに retry_max 回まで試みる）
+    _err = None
+    for _try in range(1, retry_max + 1):
+        try:
+            tcp_socket = _connect(server_ip, server_port, connect_timeout_sec)
+            _err = None
+            base.output_log(MODULE_NAME, f"Socket Comm Connected. {server_ip}:{server_port}", log_file)
+            break
+        except Exception as e:
+            _err = e
+            if _try < retry_max:
+                base.output_log(MODULE_NAME,       # リトライは画面のみ
+                    f"{TRIGGER_NAME} Connect Retry ({_try}/{retry_max}). {server_ip}:{server_port}  ({type(e).__name__}: {e})")
+                _responsive_wait(retry_wait_sec)
+    if _err is not None:
         _sig = ErrorIF.report_exception(
-            e,
+            _err,
             phase="startup",
             category="comm",
             trigger_id=TRIGGER_NAME,
@@ -196,48 +242,36 @@ def f_socket_client_trigger(
         if _sig == SIGNAL_STOP:
             stop_event.set()
             return None
-        base.output_log(MODULE_NAME, f"Socket Comm CANNOT Connect. {server_ip}:{server_port}  ({type(e).__name__}: {e})  Go on Off-Line Mode.", log_file)
+        conn_state.set_not_connectable(_err, report=False)   # ErrorIF へは上で phase=startup として通知済み
     
     """======== MAIN LOOP START ========"""
-    reconnect_fail_count = 0
-    last_reconnect_try = time.time()
     count = 0
     _rem = ""
     while not stop_event.is_set():
         try:
-            if not is_online:
-                """(Server Offline)"""
-                if time.time() - last_reconnect_try >= reconnect_interval_sec:
-                    # try re-connect
-                    last_reconnect_try = time.time()
+            if not conn_state.is_connectable():
+                """(Not Connectable) 再接続の間隔ごとに試み、結果を ConnectState へ報告する"""
+                if conn_state.should_try_reconnect():
                     try:
                         tcp_socket = _connect(server_ip, server_port, connect_timeout_sec)
-                        is_online = True
-                        reconnect_fail_count = 0
-                        base.output_log(MODULE_NAME, f"Re-Connected {server_ip}:{server_port}  Back to Online.", log_file)
-
+                        fail_count = 0
+                        _rem = ""
+                        conn_state.set_connectable()
                     except Exception as e:
-                        reconnect_fail_count += 1
-                        ErrorIF.report_event({
-                            "trigger_id": TRIGGER_NAME,
-                            "phase": "loop",
-                            "category": "comm",
-                            "exc_type": type(e).__name__,
-                            "message": f"Re-Connect Failed ({reconnect_fail_count} times). {server_ip}:{server_port}",
-                            "signature": _SIG_OFFLINE,
-                        })
-                        if not ErrorIF.should_suppress(_SIG_OFFLINE):
-                            base.output_log(MODULE_NAME,
-                                f"Re-Connect Failed ({reconnect_fail_count} times)."
-                                f"{server_ip}:{server_port}  ({type(e).__name__}): {e}", log_file)
-                        else:
-                            base.output_log(MODULE_NAME,
-                                f"Re-Connect Failed ({reconnect_fail_count} times)."
-                                f"{server_ip}:{server_port}")
+                        tcp_socket = None
+                        conn_state.reconnect_failed(e)
 
                 ErrorIF.emit_summary_if_needed()
-                time.sleep(2)
+                _responsive_wait(min(2.0, reconnect_interval_sec))
                 continue
+
+            """(Connectable) リトライ中は、ここでつなぎ直す"""
+            if tcp_socket is None:
+                try:
+                    tcp_socket = _connect(server_ip, server_port, connect_timeout_sec)
+                except Exception as e:   # 接続のタイムアウトも失敗に数える
+                    _on_fail(e)
+                    continue
             
             """Server Online"""
             # 1. Socket Send/Receive
@@ -278,33 +312,15 @@ def f_socket_client_trigger(
                 sys.stdout.flush()##
             
             count += 1
+            fail_count = 0   # 取り込めたら連続失敗の回数を 0 に戻す
             _responsive_wait(polling_ms / 1000)
         
         except socket.timeout:
             continue
 
         except (ConnectionError, OSError) as e:
-            # Conn NG -> to Offline Mode
-            _sig = ErrorIF.report_exception(
-                e,
-                phase="loop",
-                category="comm",
-                trigger_id=TRIGGER_NAME,
-                log_file=log_file
-            )
-            
-            tcp_socket.close()
-            tcp_socket = None
-            _rem = ""# 前回接続の残骸を持ち越さない（A-13）
-            reconnect_fail_count = 0
-            last_reconnect_try   = time.time()
-            is_online = False
-            base.output_log(MODULE_NAME, f"Connection Lost. to Offline. {server_ip}:{server_port}", log_file)
-            
-            if _sig == SIGNAL_STOP:
-                stop_event.set()
-                break
-                
+            # 受信中の切断・通信の失敗 → リトライ（連続 retry_max 回で not_connectable）
+            _on_fail(e)
             continue
 
         except err.TriEdgeDataError as e:

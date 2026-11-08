@@ -4,8 +4,8 @@
 """
 ########################################
 # Find Trigger Module [Demo]
-# Ver: 06.f.20261102    By: IWATA, Y.'s Agent AI
-# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
+# Ver: 06.g.20261108    By: IWATA, Y.'s Agent AI
+# Mod: pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string を削除。動作は変えない）
 ########################################
 実機が無くても TriEdge の動作を確かめられるよう、デモ用のデータを流す
 
@@ -20,17 +20,14 @@ MODULE_NAME = "FIND_Demo"
 """standard library"""
 import csv
 from   datetime import datetime as dt
-import json
 import os
 import queue
 import random
-import shutil # copy file
-import socket
 import sys
 import threading
 import time
 import traceback
-from   typing   import Any, Dict, List, Tuple, Sequence, Optional
+from   typing   import Any, Dict
 
 """external library"""
 ## NOT Use
@@ -72,7 +69,6 @@ except ModuleNotFoundError:
         sys.exit(1)
 
 """local module"""
-import src.tri_s01_error_if       as err
 from   src.tri_s01_error_if       import ErrorIF, SIGNAL_STOP
 
 """system dir, file"""
@@ -116,7 +112,6 @@ def f_demo_random_trigger(
         str_list    = config.get("str_list", ["ABC", "DEF", "XYZ"])
         
         """定義から key, dtype を取得"""
-        key_actual   = [col_def[k][0] for k in sorted(col_def.keys())]
         dtype_actual = [col_def[k][1] for k in sorted(col_def.keys())]
         
     except Exception as e:
@@ -177,7 +172,6 @@ def f_demo_csv_trigger(
 
     try:
         base.output_log(MODULE_NAME, f"{TRIGGER_NAME} Start.", log_file)
-        key_define   = [col_def[k][0] for k in sorted(col_def.keys())]
         ##dtype_define = [col_def[k][1] for k in sorted(col_def.keys())]
         
         # config

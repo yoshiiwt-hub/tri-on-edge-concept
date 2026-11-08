@@ -4,8 +4,8 @@
 """
 ########################################
 # EDA Runner
-# Ver: 01.f.20261102    By: IWATA, Y.'s Agent AI
-# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
+# Ver: 01.g.20261108    By: IWATA, Y.'s Agent AI
+# Mod: pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string を削除。動作は変えない）
 ########################################
 蓄積したデータを読み込み、探索的データ分析（EDA）の統計表とグラフをまとめて作る入口
 
@@ -21,14 +21,13 @@ visualise  # グラフを作る（tri_s21_eda_viz_interact / tri_s21_eda_viz_sta
 MODULE_NAME = "Eda_Runner"
 
 """standard library"""
-from   datetime import datetime as dt
 import importlib
 import json
 import os
 from   pathlib  import Path
 import sys
 import traceback
-from   typing   import Any, Dict, List, Tuple, Sequence, Optional
+from   typing   import Tuple
 
 """external library"""
 # (Not Using)
@@ -62,7 +61,7 @@ def _resolve_outdir(outdir_val: str, json_path: str) -> str:
 # 1. Load and Pre-Processing
 ########################################
 def load(TITLE, MODULE, OUTPUT) -> Tuple:
-    utl.log(f"Data Load Start.", MODULE_NAME)
+    utl.log("Data Load Start.", MODULE_NAME)
     try:
         _module = importlib.import_module(f"{MODULE[0]}.{MODULE[1]}")
         if not hasattr(_module, MODULE[2]):
@@ -79,7 +78,7 @@ def load(TITLE, MODULE, OUTPUT) -> Tuple:
         print(traceback.format_exc(), flush=True)
         raise
     
-    utl.log(f"Data Load End.", MODULE_NAME)
+    utl.log("Data Load End.", MODULE_NAME)
     return df, col_def
 
 
@@ -87,7 +86,7 @@ def load(TITLE, MODULE, OUTPUT) -> Tuple:
 # 2. Explore Data
 ########################################
 def explore(TITLE, MODULE, OUTPUT, df, col_def) -> None:
-    utl.log(f"Explore Start.", MODULE_NAME)
+    utl.log("Explore Start.", MODULE_NAME)
     try:
         _module = importlib.import_module(f"{MODULE[0]}.{MODULE[1]}")
         if not hasattr(_module, MODULE[2]):
@@ -100,14 +99,14 @@ def explore(TITLE, MODULE, OUTPUT, df, col_def) -> None:
         print(traceback.format_exc(), flush=True)
         raise
 
-    utl.log(f"Explore End.", MODULE_NAME)
+    utl.log("Explore End.", MODULE_NAME)
 
 
 ########################################
 # 3. Visualise
 ########################################
 def visualise(TITLE, MODULE, df, col_def, CONFIG) -> None:
-    utl.log(f"Visualise Start.", MODULE_NAME)
+    utl.log("Visualise Start.", MODULE_NAME)
     try:
         _module = importlib.import_module(f"{MODULE[0]}.{MODULE[1]}")
         if not hasattr(_module, MODULE[2]):
@@ -121,7 +120,7 @@ def visualise(TITLE, MODULE, df, col_def, CONFIG) -> None:
         print(traceback.format_exc(), flush=True)
         raise
 
-    utl.log(f"Visualise End.", MODULE_NAME)
+    utl.log("Visualise End.", MODULE_NAME)
 
 
 ########################################

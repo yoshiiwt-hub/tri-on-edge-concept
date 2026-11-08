@@ -18,6 +18,10 @@
 #  ④gen_viz_report() 冒頭で AnalyzeFunctionsVZ_DT(AFVD)・AnalyzeFunctionsPP(AFP) はimport
 #    されていたが、viz_pca_vec() が使う AFU.PrimaryComponentAnalysis() の AnalyzeFunctionsUS
 #    （AFU）がimportされておらず NameError になっていた。import AnalyzeFunctionsUS as AFU を追加。
+#    → 2026.11.04 AnalyzeFunctions* への依存自体を解消した（By: IWATA, Y.'s Agent AI）。
+#      AFVD.visualiseData は本ファイルの visualiseData()、AFP.encodeData は _encode_label()、
+#      AFP.CALC_STATS は _calc_corr()（相関行列の計算のみ。Excel 出力はしない）、
+#      AFU.PrimaryComponentAnalysis は _pca_eigenvector() に置き換えた。
 #  ⑤gen_viz_report(): 目的変数(tar_)が未設定（None）の場合、tar_を使うグラフ生成が失敗するが、
 #    _safe() のエラーメッセージが元の例外内容（"None"等）だけでは原因が分かりにくかったため、
 #    tar_ is None の場合は「目的変数(objective)が未設定なため、この処理は実行できなかった
@@ -26,8 +30,9 @@
 """
 ########################################
 # EDA Visualization Library [Static]（旧 AnalyzeFunctionsVZ_DT）
-# Ver: 01.b.20261104    By: IWATA, Y.'s Agent AI
-# Mod: 公開版に向け、非公開・旧名のモジュールへの言及を整理
+# Ver: 01.e.20261108    By: IWATA, Y.'s Agent AI
+# Mod: pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string を削除。動作は変えない）。
+#      残す japanize_matplotlib の import に理由のコメントを付けた。改行を CRLF にそろえた
 ########################################
 分布・関係・相関などのグラフを画像で作り、Excel のレポートにまとめる可視化の本体
 
@@ -43,7 +48,6 @@ image_to_excel  # 画像を Excel のシートに埋め込む。
 #################### IMPORT LIBRARY ##########
 ##im##port collections   #カウント
 ##from   contextlib im##port redirect_stdout
-import copy             #リストのコピー
 import traceback        #エラー時のスタックトレース表示（gen_viz_report内の_safe()ラッパー用）
 import datetime as dt   #時間、時刻
 import gc               #メモリクリア
@@ -60,20 +64,20 @@ pd.options.display.float_format = '{:.2f}'.format
 pd.options.display.max_rows     = None
 pd.options.display.max_columns  = None
 pd.options.display.show_dimensions = True
-from   scipy.stats import gaussian_kde
+from   scipy.stats import gaussian_kde, chi2_contingency
 from   sklearn import preprocessing as pp
+from   sklearn.decomposition import PCA
 ##from   sklearn.tree im##port export_graphviz, plot_tree
 ##from   sklearn.metrics im##port accuracy_score, mean_absolute_error, mean_squared_error, r2_score
 
 import matplotlib.pyplot as plt #可視化
-from   matplotlib.colors import ListedColormap, LinearSegmentedColormap
-import matplotlib.font_manager as fm
+from   matplotlib.colors import ListedColormap
 ##from   matplotlib im##port rcParams
 ##im##port matplotlib.dates as mdates, DateFormatter
 ##im##port matplotlib.patches as patches
 ##from   mpl_toolkits.mplot3d im##port Axes3D
 if (__file__[:9] not in ["/storage/"]): plt.rcParams['font.family'] = 'Meiryo' # 'sans-serif' # 
-else: import japanize_matplotlib
+else: import japanize_matplotlib # 使っていないように見えるが、import するだけでグラフに日本語フォントが設定されるので消さない
 ##fm._rebuild()
 ##print('font フォント:',fm.findSystemFonts())##
 ##plt.rcParams['font.sans-serif'] = ['Noto Sans CJK JP', 'Yu Gothic', 'Meiryo', 'Hiragino Maru Gothic Pro', 'Meirio', 'Takao', 'IPAexGothic', 'IPAPGothic', 'VL PGothic']
@@ -149,7 +153,6 @@ def visualiseData(DF, graph, LstColumn, catColumn, EXEC_CFG):
     else: MY_CMP = EXEC_CFG.get("MY_CMP",["royalblue","darkorange","forestgreen","fuchsia","mediumblue","gold","darkviolet",'y','c','m'])
     
     my_listed_cmap = ListedColormap(MY_CMP, name='MY_CMP', N=10)
-    my_liner_cmap  = LinearSegmentedColormap.from_list('MY_CMP', MY_CMP, len(MY_CMP))
     #print(my_cmap)##
     
     CMP_1 = my_listed_cmap # plt.get_cmap('tab10')  ## 'tab10' 10 'Pastel2' 'Paired' 'Set1' 'Set2' 'tab20'
@@ -824,7 +827,6 @@ def image_to_excel(l_img, d_param):
     wb_name = d_param["title"]+'_img.xlsx'
     ws_name = d_param["title"]
     cel_h , cel_w  = 16     , 12
-    cel_h_, cel_w_ = 16*0.75, 12*0.13
     
     if (os.path.exists(d_param["outdir"]+wb_name)):
         wb = openpyxl.load_workbook(d_param["outdir"]+wb_name)
@@ -848,8 +850,6 @@ def image_to_excel(l_img, d_param):
     img_height, img_width = size_img.shape[:2]
     
     ## (セルのサイズ)
-    h_ = int(img_height*0.5 / cel_h*0.75) + 1
-    w_ = int(img_width *0.5 / cel_w*0.13) + 1
     h_img_row = int(img_height*0.5 / cel_h*0.75 + 1)##
     w_img_row = int(img_width *0.5 / cel_w*0.13 + 1)##
     
@@ -889,10 +889,93 @@ def image_to_excel(l_img, d_param):
 ########################################
 
 ########################################
+## Mod: 2026.11.04    By: IWATA, Y.'s Agent AI（AnalyzeFunctionsPP.encodeData を移植）
+def _encode_label(df_, l_col_):
+    """object 型の列を LabelEncoder で数値に置き換える。df_ はその場で書き換える"""
+    l_cls_ = []
+    for c_ in l_col_:
+        if (df_[c_].dtype == 'object'):
+            le_ = pp.LabelEncoder().fit(df_[c_])
+            df_[c_] = le_.transform(df_[c_])
+            l_cls_ = list(le_.classes_)
+        else:
+            l_cls_ = list(np.sort(df_[c_].unique()))
+        ##:if
+    ##:for
+    return df_, l_cls_
+##:def
+
+## Mod: 2026.11.04    By: IWATA, Y.'s Agent AI（AnalyzeFunctionsPP.CALC_STATS の相関部分を移植）
+def _calc_corr(df_, l_ql_, l_qn_):
+    """
+    相関行列を求める（ファイル出力はしない）
+    戻り値: [[Spearman, Pearson], クラメールの連関係数(質×質), 相関比(量×質)]
+    """
+    df_cr_spr = df_[l_qn_].corr("spearman")
+    df_cr_psn = df_[l_qn_].corr("pearson")
+
+    ## クラメールの連関係数（カテゴリ×カテゴリ）
+    if (2<=len(l_ql_)):
+        df_crmr = pd.DataFrame(columns=l_ql_, index=l_ql_)
+        for ql1 in l_ql_:
+            if (len(df_[ql1])==0): continue
+            for ql2 in l_ql_:
+                if (len(df_[ql2])==0): continue
+                table_ = pd.crosstab(df_[ql1], df_[ql2])
+                x2_,_,_,_ = chi2_contingency(table_, False)
+                n_ = table_.sum().sum()
+                df_crmr.loc[ql1, ql2] = np.sqrt(x2_ / (n_*(np.min(table_.shape)-1)))
+            ##:for
+        ##:for
+        df_crmr = df_crmr.astype('float')
+    else:
+        df_crmr = pd.DataFrame()
+    ##:if
+
+    ## 相関比（カテゴリ×数値）
+    if (1<=len(l_ql_)) and (1<=len(l_qn_)):
+        df_crrt = pd.DataFrame(columns=l_ql_, index=l_qn_)
+        for ql in l_ql_:
+            cat_srs = df_[ql]
+            cat_unq = list(pd.Series(cat_srs.unique()).dropna())
+            for qn in l_qn_:
+                num_     = df_[qn]
+                num_mean = num_.dropna().mean()
+                num_var_all = ((num_-num_mean)**2).sum()  # 全体の偏差の平方和
+                cat_var  = [len(n.dropna())*(n.dropna().mean() - num_mean)**2 for n in [num_[cat_srs==c] for c in cat_unq]]
+                df_crrt.loc[qn, ql] = sum(cat_var) / num_var_all
+            ##:for
+        ##:for
+        df_crrt = df_crrt.astype('float')
+    else:
+        df_crrt = pd.DataFrame()
+    ##:if
+
+    return [[df_cr_spr, df_cr_psn], df_crmr, df_crrt]
+##:def
+
+## Mod: 2026.11.04    By: IWATA, Y.'s Agent AI（AnalyzeFunctionsUS.PrimaryComponentAnalysis を移植）
+def _pca_eigenvector(df_, n_com_):
+    """
+    数値列を標準化して PCA を行い、固有ベクトルを返す（行=主成分、列=元の変数）
+    主成分名は p{番号}_{寄与率‰}_{累積寄与率‰}。欠損を含む行は除外する
+    """
+    df_num_ = df_[df_.select_dtypes(include='number').columns].dropna()
+    arr_ = pp.StandardScaler().fit_transform(df_num_.values)
+
+    pca_ = PCA(n_components=min(20, len(df_num_.columns), n_com_, len(df_num_)), random_state=23)
+    pca_.fit(arr_)
+
+    evr_     = pca_.explained_variance_ratio_
+    evr_acc_ = evr_.cumsum()
+    l_pcomp_ = ['p{0}_{1:03.0f}_{2:03.0f}'.format(i+1, evr_[i]*1000, evr_acc_[i]*1000) for i in range(len(evr_))]
+
+    return pd.DataFrame(pca_.components_, columns=df_num_.columns, index=l_pcomp_)
+##:def
+########################################
+
+########################################
 def gen_viz_report(fea_, tar_, tar_is_, df_, ql_, qn_, cfg_):
-    import AnalyzeFunctionsVZ_DT as AFVD
-    import AnalyzeFunctionsPP    as AFP
-    import AnalyzeFunctionsUS    as AFU  # viz_pca_vec() の AFU.PrimaryComponentAnalysis() で使用（import漏れを修正）
     print("_____ GEN VISUALIZE REPORT _____")
     print(dt.datetime.now(),'\n')
     
@@ -923,13 +1006,13 @@ def gen_viz_report(fea_, tar_, tar_is_, df_, ql_, qn_, cfg_):
         
         l_imf = []
         if (tar_is_=='ql') and (1<=len(fea_qn_)):
-            for c_ in fea_qn_: l_imf.append(AFVD.visualiseData(df_, 'box', [c_], tar_, cfg_))
-            l_imf.append(AFVD.visualiseData(df_, 'box', fea_qn_, '', cfg_))
+            for c_ in fea_qn_: l_imf.append(visualiseData(df_, 'box', [c_], tar_, cfg_))
+            l_imf.append(visualiseData(df_, 'box', fea_qn_, '', cfg_))
         ##:if
         
         if (tar_is_=='qn') and (1<=len(fea_ql_)):
-            for c_ in fea_ql_: l_imf.append(AFVD.visualiseData(df_, 'box', [tar_], c_, cfg_))
-            l_imf.append(AFVD.visualiseData(df_, 'box', [tar_]+fea_qn_, '', cfg_))
+            for c_ in fea_ql_: l_imf.append(visualiseData(df_, 'box', [tar_], c_, cfg_))
+            l_imf.append(visualiseData(df_, 'box', [tar_]+fea_qn_, '', cfg_))
         ##:if
        
         print(l_imf,len(l_imf))##
@@ -942,18 +1025,18 @@ def gen_viz_report(fea_, tar_, tar_is_, df_, ql_, qn_, cfg_):
         fea_ql_,_,_,fea_qn_ = def_var(tar_, tar_is_, ql_, qn_)
         l_imf = []
         if (tar_is_=='ql') and (1<=len(fea_qn_)):
-            for c_ in fea_qn_: l_imf.append(AFVD.visualiseData(df_, 'hist', [c_], tar_, cfg_))
-            l_imf.append(AFVD.visualiseData(df_, 'hist', fea_qn_, '', cfg_))
+            for c_ in fea_qn_: l_imf.append(visualiseData(df_, 'hist', [c_], tar_, cfg_))
+            l_imf.append(visualiseData(df_, 'hist', fea_qn_, '', cfg_))
         ##:if
         
         if (tar_is_=='qn') and (1<=len(fea_ql_)):
-            for c_ in fea_ql_: l_imf.append(AFVD.visualiseData(df_, 'hist', [tar_], c_, cfg_))
-            l_imf.append(AFVD.visualiseData(df_, 'hist', [tar_]+fea_qn_, '', cfg_))
+            for c_ in fea_ql_: l_imf.append(visualiseData(df_, 'hist', [tar_], c_, cfg_))
+            l_imf.append(visualiseData(df_, 'hist', [tar_]+fea_qn_, '', cfg_))
         ##:if
         
         if (tar_ in ['',None]) and (1<=len(fea_qn_)):
-            for c_ in fea_qn_: l_imf.append(AFVD.visualiseData(df_, 'hist', [c_], '', cfg_))
-            l_imf.append(AFVD.visualiseData(df_, 'hist', fea_qn_, '', cfg_))
+            for c_ in fea_qn_: l_imf.append(visualiseData(df_, 'hist', [c_], '', cfg_))
+            l_imf.append(visualiseData(df_, 'hist', fea_qn_, '', cfg_))
         ##:if
         
         print(l_imf,len(l_imf))##
@@ -967,12 +1050,12 @@ def gen_viz_report(fea_, tar_, tar_is_, df_, ql_, qn_, cfg_):
         
         l_imf = []
         if (tar_is_=='ql') and (2<=len(fea_qn_)):
-            for c1, c2 in itr.combinations(fea_qn_, 2): l_imf.append(AFVD.visualiseData(df_, 'scatter', [c1, c2], tar_, cfg_))
+            for c1, c2 in itr.combinations(fea_qn_, 2): l_imf.append(visualiseData(df_, 'scatter', [c1, c2], tar_, cfg_))
         ##:if
         
         if (tar_is_=='qn') and (1<=len(fea_qn_)):
             cat_ = fea_ql_[0] if (0<len(fea_ql_)) else tar_
-            for c_ in fea_qn_: l_imf.append(AFVD.visualiseData(df_, 'scatter', [c_, tar_], cat_, cfg_))
+            for c_ in fea_qn_: l_imf.append(visualiseData(df_, 'scatter', [c_, tar_], cat_, cfg_))
         ##:if
         
         print(l_imf,len(l_imf))##
@@ -987,8 +1070,8 @@ def gen_viz_report(fea_, tar_, tar_is_, df_, ql_, qn_, cfg_):
         if (2<=len(fea_qn_)):
             cat_ = fea_ql_[0] if (0<len(fea_ql_)) else tar_
             for c1, c2 in itr.combinations(fea_qn_, 2):
-                if (tar_is_ != ''): l_imf.append(AFVD.visualiseData(df_, 'scatter', [c1, c2], cat_, cfg_))####
-                else              : l_imf.append(AFVD.visualiseData(df_, 'scatter', [c1, c2], ''  , cfg_))
+                if (tar_is_ != ''): l_imf.append(visualiseData(df_, 'scatter', [c1, c2], cat_, cfg_))####
+                else              : l_imf.append(visualiseData(df_, 'scatter', [c1, c2], ''  , cfg_))
             ##:for
         ##:if
         
@@ -1006,7 +1089,7 @@ def gen_viz_report(fea_, tar_, tar_is_, df_, ql_, qn_, cfg_):
         print(df_v_.dtypes)##
 
         obj_col = [tar_]+fea_ql_obj_ if (tar_is_=='ql') else fea_ql_obj_
-        if (0<len(obj_col)): df_v_,_ = AFP.encodeData(df_v_, obj_col)
+        if (0<len(obj_col)): df_v_,_ = _encode_label(df_v_, obj_col)
 
         cols = [tar_]+fea_ql_num_ + fea_ql_obj_ + fea_qn_
         for i_ in range(0, len(cols), N):
@@ -1016,9 +1099,9 @@ def gen_viz_report(fea_, tar_, tar_is_, df_, ql_, qn_, cfg_):
             if (tar_is_ != ''):
                 posfx_ = "(sort)"
                 df_v_ = df_v_.sort_values([tar_], ascending=True).reset_index(drop=True)##
-                l_imf.append(AFVD.visualiseData(df_v_, gtype, cols[i_:i_+N], tar_, {**cfg_,"title":cfg_["title"]+posfx_}))
+                l_imf.append(visualiseData(df_v_, gtype, cols[i_:i_+N], tar_, {**cfg_,"title":cfg_["title"]+posfx_}))
             else:
-                l_imf.append(AFVD.visualiseData(df_v_, gtype, cols[i_:i_+N], tar_, cfg_))####
+                l_imf.append(visualiseData(df_v_, gtype, cols[i_:i_+N], tar_, cfg_))####
             ##:if
             
 #            ## 平準化
@@ -1049,24 +1132,24 @@ def gen_viz_report(fea_, tar_, tar_is_, df_, ql_, qn_, cfg_):
             qn_col = fea_qn_
         ##:if
         
-        _,_,l_df_cr = AFP.CALC_STATS(df_[ql_col+qn_col], ql_col, qn_col, cfg_)
+        l_df_cr = _calc_corr(df_[ql_col+qn_col], ql_col, qn_col)
         
         if (0<len(l_df_cr[0][0])):
             print(len(l_df_cr[0][0]))##
             l_df_cr[0][0] = l_df_cr[0][0].reindex(index=qn_col, columns=qn_col)
-            l_imf.append(AFVD.visualiseData(l_df_cr[0][0], 'heatmm', qn_col[:16], '', {**cfg_,"title":cfg_["title"]+"_Corr"}))
+            l_imf.append(visualiseData(l_df_cr[0][0], 'heatmm', qn_col[:16], '', {**cfg_,"title":cfg_["title"]+"_Corr"}))
         ##:if
         
         if (0<len(l_df_cr[1])):
             print(len(l_df_cr[1]))##
             l_df_cr[1] = l_df_cr[1].reindex(index=ql_col, columns=ql_col)
-            l_imf.append(AFVD.visualiseData(l_df_cr[1], 'heatmm', ql_col[:16], '', {**cfg_,"title":cfg_["title"]+"_Corr(crmr)"}))
+            l_imf.append(visualiseData(l_df_cr[1], 'heatmm', ql_col[:16], '', {**cfg_,"title":cfg_["title"]+"_Corr(crmr)"}))
         ##:if
         
         if (0<len(l_df_cr[2])):
             print(len(l_df_cr[2]))##
             l_df_cr[2] = l_df_cr[2].reindex(index=qn_col, columns=ql_col)
-            l_imf.append(AFVD.visualiseData(l_df_cr[2], 'heatmm', ql_col[:16], '', {**cfg_,"title":cfg_["title"]+"_Corr(crrt)"}))
+            l_imf.append(visualiseData(l_df_cr[2], 'heatmm', ql_col[:16], '', {**cfg_,"title":cfg_["title"]+"_Corr(crrt)"}))
         ##:if
         
         print(l_imf,len(l_imf))##
@@ -1095,7 +1178,7 @@ def gen_viz_report(fea_, tar_, tar_is_, df_, ql_, qn_, cfg_):
                 df_xtb_norm.index.name = tar_
                 #print(df_xtb_norm)##
                 
-                l_imf.append(AFVD.visualiseData(df_xtb_norm, 'heatrt', list(df_xtb_norm.columns), '', cfg_))
+                l_imf.append(visualiseData(df_xtb_norm, 'heatrt', list(df_xtb_norm.columns), '', cfg_))
             ##:for
         ##:if
         
@@ -1107,13 +1190,12 @@ def gen_viz_report(fea_, tar_, tar_is_, df_, ql_, qn_, cfg_):
     ## ヒートマップ(PCA固有ベクトル)
     def viz_pca_vec(tar_, tar_is_, ql_, qn_):
         print('DIMENSIONALITY REDUCTION')
-        title_ = cfg_["title"]+"(pca)"
         l_imf = []
 
         _,_,_,fea_qn_ = def_var(tar_, tar_is_, ql_, qn_)
         
         if (2<=len(fea_qn_)):
-            _,_,df_vec = AFU.PrimaryComponentAnalysis(df_[fea_qn_[:16]], 8)
+            df_vec = _pca_eigenvector(df_[fea_qn_[:16]], 8)
             ##df_vec.T.to_excel(OUTDIR+title_+"_pca_vec.xlsx", index=True, header=True)
             
             df_vec_ = df_vec.T
@@ -1122,7 +1204,7 @@ def gen_viz_report(fea_, tar_, tar_is_, df_, ql_, qn_, cfg_):
             df_vec_['p_stat'] = df_vec_[cols_].max(axis=1)
             for c in cols_: df_vec_[c+"_r"] = df_vec_[c].round(1)
             
-            l_imf.append(AFVD.visualiseData(df_vec_.query('0.1<p_stat').sort_values([c+"_r" for c in cols_[:16]], ascending=False), 'heat', cols_, '', {**cfg_, "title":cfg_["title"]+"_vec", "FC":"darkslategray", "EC":"snow"}))
+            l_imf.append(visualiseData(df_vec_.query('0.1<p_stat').sort_values([c+"_r" for c in cols_[:16]], ascending=False), 'heat', cols_, '', {**cfg_, "title":cfg_["title"]+"_vec", "FC":"darkslategray", "EC":"snow"}))
         ##:if
         
         print(l_imf,len(l_imf))##
@@ -1201,92 +1283,29 @@ def gen_viz_report(fea_, tar_, tar_is_, df_, ql_, qn_, cfg_):
 ##:def
 ########################################
 
-##savefile = visualiseData(DF, graph, LstColumn, catColumn, EXEC_CFG)
-
 ########################################
-#v06.20220130
+## 単体テスト（load_pp/wine.py のデータでレポートを生成する）
+## Mod: 2026.11.04    By: IWATA, Y.'s Agent AI（AnalyzeFunctions* に依存しない形に置き換え）
 if __name__ == "__main__":
-    import AnalyzeFunctionsDT    as AFD
-    import AnalyzeFunctionsPP    as AFP
-    import AnalyzeFunctionsUS    as AFU
-    import AnalyzeFunctionsML    as AFM
-    import AnalyzeFunctionsVZ_DT as AFVD
+    import sys
+    from pathlib import Path
+    sys_dir = Path(__file__).resolve().parent.parent
+    if str(sys_dir) not in sys.path: sys.path.insert(0, str(sys_dir))
+    from load_pp import wine
     
-    if (__file__[:9] in ["/storage/"]): figsize = [4.2,6.5,300,0.5,10]
-    else: figsize = [3000/300,2000/300,300,1.0,10]
+    df, col_def = wine.load_data()
+    l_def = [col_def[k] for k in sorted(col_def.keys(), key=int)]
+    ql  = [v[0] for v in l_def if (v[2]=="category")]
+    qn  = [v[0] for v in l_def if (v[2]=="numetory")]
+    fea = [v[0] for v in l_def if (v[3]=="explanatory")]
+    tar = [v[0] for v in l_def if (v[3]=="objective")][0]
+    tar_is = 'ql' if (tar in ql) else 'qn' if (tar in qn) else ''
     
-    FILENAME = os.path.basename(__file__)
-    DIRNAME  = os.path.dirname(__file__)
-    INDIR    = DIRNAME+"/input/"
-    OUTDIR   = DIRNAME+"/output/"
-    for d in [INDIR,OUTDIR]: os.makedirs(d) if not(os.path.exists(d)) else None
-##:if
-
-## データ準備
-if __name__ == "__main__":
-    print(dt.datetime.now(),"[START] PREPARATION, PREPROSESSING",'\n')
+    outdir = os.path.join(str(sys_dir), "output", "test_vz_dt", "")
+    os.makedirs(outdir, exist_ok=True)
+    cfg = dict(figsize=[3000/300,2000/300,300,1.0,10], title="Wine", outdir=outdir, FC="darkslategray", EC="snow")
     
-    title_ = "MPG"  # Iris Wine MPG Ames AWB ATTRI STL TTN GLSS FrFr BNT Sensor Tb Tg Sin DataXn ##
-    featurename,targetname,df,IsQualittv,IsQuanttv,Judge = AFD.PrepareData(title_)
-    
-    target_is = \
-         'ql' if (targetname[0] in IsQualittv)\
-    else 'qn' if (targetname[0] in IsQuanttv)\
-    else ''
-    
-    OUTDIR = DIRNAME+"/DIO/"+title_+"/output/"
-    if not(os.path.exists(OUTDIR)): os.makedirs(OUTDIR)
-    
-    print("df:",len(df),",",len(df.columns))
-    print("target :",targetname,target_is)
-    print("feature:",len(featurename),featurename)
-    print("IsQualittv:",len(IsQualittv),IsQualittv)
-    print("IsQuanttv :",len(IsQuanttv),IsQuanttv)
-    
-    print()
-    print(dt.datetime.now(),"[END] PREPARATION, PREPROSESSING",'\n')
-##:if
-
-## 可視化レポート
-if (__name__ == "__main__"):
-    print(dt.datetime.now(),"[START] VISUALIZE",'\n')
-    
-    cfg = dict(figsize=figsize
-    , title=title_
-    , outdir=OUTDIR
-    , FC="darkslategray", EC="snow")##
-    ## k dimgrey darkgrey silver snow ghostwhite w
-    ## darkslategray darkcyan lightslategrey 
-    ## midnightblue steelblue aliceblue
-    
-    if (title_ == "MPG"):
-        for c in ['carname', 'manu_name']: IsQualittv.remove(c)
-    ##:if
-    
-    if (True): gen_viz_report(featurename, targetname[0], target_is, df.dropna(subset=IsQuanttv), IsQualittv, IsQuanttv, {**cfg, "title": title_+""})
-    
-    if (False):
-        print('DIMENSIONALITY REDUCTION')
-        title_ = title_ + "(pca)"
-        fea_ql, fea_qn = copy.deepcopy(IsQualittv), copy.deepcopy(IsQuanttv)
-        if (targetname[0] in fea_ql): fea_ql.remove(targetname[0])
-        if (targetname[0] in fea_qn): fea_qn.remove(targetname[0])
-
-        _, df_pca, df_vec = AFU.PrimaryComponentAnalysis(df[fea_qn], 10)
-        df = pd.concat([df[fea_ql], df_pca, df[targetname]], axis=1)
-
-        if (targetname[0] in IsQuanttv):
-            IsQuanttv = copy.deepcopy(list(df_pca.columns) + targetname)
-            featurename = fea_ql + IsQuanttv[:-1]
-        else:
-            IsQuanttv = copy.deepcopy(list(df_pca.columns))
-            featurename = fea_ql + IsQuanttv
-        ##:if
-        
-        gen_viz_report(featurename, targetname[0], target_is, df, IsQualittv, IsQuanttv, {**cfg, "title":title_})
-    ##:if
-    
-    print()
-    print(dt.datetime.now(),"[END] VISUALIZE",'\n')
+    l_l_img = gen_viz_report(fea, tar, tar_is, df.dropna(subset=qn), ql, qn, cfg)
+    print("images:", sum(len(l) for l in l_l_img), " excel:", os.path.exists(outdir+"Wine_img.xlsx"))
 ##:if
 ########################################

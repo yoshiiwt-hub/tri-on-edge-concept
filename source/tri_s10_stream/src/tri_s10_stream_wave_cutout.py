@@ -4,8 +4,8 @@
 """
 ########################################
 # Stream Wave Cutout Module
-# Ver: 01.f.20261102    By: IWATA, Y.'s Agent AI
-# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
+# Ver: 01.g.20261108    By: IWATA, Y.'s Agent AI
+# Mod: pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string を削除。動作は変えない）
 ########################################
 受信したレコードの流れから、開始・終了の条件に従って波形（セグメント）を切り出す
 
@@ -436,7 +436,7 @@ def process_stream_record(
     """
 
     # Declare Global Var
-    global STAGE_TIMESTAMP, STAGE_COUNT, SEG_START_TS
+    global SEG_START_TS
 
     """recordを各変数に展開"""
     timestamp, index, value = record
@@ -567,7 +567,7 @@ def process_stream_record(
         seg_ind += 1
         segment_buffer.append([seg_id, seg_ind, seg_ts, 0] + value)
 
-        sys.stdout.write(f"\n")
+        sys.stdout.write("\n")
         _seg_log(f"波形終点 検出: seg_range={seg_range}")
 
         """波形登録（クリア前にコピー）。キュー送信・STQ 登録・集計・STQ 掃除は呼び出し側（on_cutout_segment）で行う"""

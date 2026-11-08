@@ -4,8 +4,8 @@
 """
 ########################################
 # Act Trigger Module [Remote File (SMB)]
-# Ver: 02.f.20261104    By: IWATA, Y.'s Agent AI
-# Mod: 公開版に向け、非公開・旧名のモジュールへの言及を整理
+# Ver: 02.h.20261108    By: IWATA, Y.'s Agent AI
+# Mod: pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string を削除。動作は変えない）
 ########################################
 Find が見つけたファイルを、ネットワーク上の共有フォルダ（SMB）へ送り届ける出口
 
@@ -13,7 +13,7 @@ Find が見つけたファイルを、ネットワーク上の共有フォルダ
 a_send_remote_file_trigger  # セグメントの file_path 列のファイルを SMB の共有フォルダへアップロードし、送った後のファイルを後処理する。
 
 位置づけ: 上位側の共有フォルダへファイルを集約する場合に使う。FTP サーバーへ送る場合は tri_s12_act_ftp を使う。
-設計意図: 一時名（.tmp）に書き込んでからリネームし、受け手が書込み途中のファイルを読まないようにする。保存先のフォルダは、固定のパスのほか、行の値（ロット番号等）で行ごとに変えられるようにする。送った後のファイルを残す場合は、送信済みを SQLite に記録して二重に送らない。
+設計意図: 一時名（.tmp）に書き込んでからリネームし、受け手が書込み途中のファイルを読まないようにする。保存先のフォルダは、固定のパスのほか、行の値（ロット番号等）で行ごとに変えられるようにする。送った後のファイルを残す場合は、送信済みを SQLite に記録して二重に送らない。共有フォルダに届かなければ、つなぎ直して送り直し（リトライ）、続けて失敗したら接続できない（not_connectable）とする。接続できない状態の記録・再接続の間隔は tri_s01_connect_state に任せる。
 前提・制約: パスワードは環境変数（SMB_PASSWORD）で渡す。絶対パスのファイルのみ扱う。
 """
 MODULE_NAME = "ACT_SMB"
@@ -28,7 +28,7 @@ import sys
 import threading
 import time
 import traceback
-from   typing   import Any, Dict, List, Tuple, Optional
+from   typing   import Any, Dict, Tuple, Optional
 
 """external library"""
 import smbclient
@@ -73,6 +73,7 @@ except ModuleNotFoundError:
 
 """local module"""
 from   src.tri_s01_error_if import ErrorIF, SIGNAL_STOP
+from   src.tri_s01_connect_state import ConnectState
 import src.tri_s19_util  as utl
 
 """system dir, file"""
@@ -141,6 +142,13 @@ def a_send_remote_file_trigger(
             無いフォルダは作成する。値が空・"____"・使えない場合は処理せず異常として記録する（ファイルは元の場所に残る）
             make_subdir_level は、この列の値で決めたフォルダの下に適用する
         運用系メトリクス: last_ok_file / total_ok_files / last_ng_file / total_ng_files（正常は画面表示のみ、異常はログファイルにも残す）
+        接続の扱い:
+            送信に失敗したら、共有フォルダに届くか（セッションの登録とフォルダの確認）を確かめる。
+            届かなければ接続の失敗として retry_wait_sec ごとにつなぎ直して送り直し、連続 retry_max 回で not_connectable とする。
+            届くならファイル側の失敗（権限・パス等）として、今までどおりそのファイルだけ異常として記録する
+            接続できない間は reconnect_interval_sec ごとに再接続を試みる。届いたファイルは not_connectable_action に従う
+            （"wait" = 再接続できるまで待つ（既定）/ "skip" = 送らない。後処理もしないので、ファイルは元の場所に残る）
+            接続の状態（ConnectState が登録。ACT_SMB）: connect_state / not_connectable_since / reconnect_fail_count / total_not_connectable
     """
     TRIGGER_NAME = "a_send_remote_file_trigger"
 
@@ -192,6 +200,14 @@ def a_send_remote_file_trigger(
         smb_password = config.get("smb_password", "") or os.getenv("SMB_PASSWORD", "")
         smb_domain   = config.get("smb_domain",   "") or os.getenv("SMB_DOMAIN",   "")
         overwrite    = bool(config.get("overwrite", True))
+        retry_max              = int(config.get("retry_max", 3))
+        retry_wait_sec         = float(config.get("retry_wait_sec", 5.0))
+        reconnect_interval_sec = float(config.get("reconnect_interval_sec", 10.0))
+        if retry_max < 1 or retry_wait_sec < 0:
+            raise ValueError(f"config['retry_max'] must be >= 1 and config['retry_wait_sec'] >= 0. Got: {retry_max} / {retry_wait_sec}")
+        not_connectable_action = str(config.get("not_connectable_action", "wait")).strip().lower()
+        if not_connectable_action not in ("skip", "wait"):
+            raise ValueError(f"config['not_connectable_action'] must be 'skip' / 'wait'. Got: {not_connectable_action!r}")
 
         if not smb_server or not smb_share:
             raise ValueError(f"smb_server and smb_share required. smb_server={smb_server!r} smb_share={smb_share!r}")
@@ -208,6 +224,9 @@ def a_send_remote_file_trigger(
             f"after_upload={after_upload} move_to={move_to} rename_pfx_sfx={[rename_pfx, rename_sfx]} "
             f"smb_dir={smb_dir} remote_dir_col={remote_dir_col} move_to_col={move_to_col} "
             f"overwrite={overwrite} make_subdir_level={make_subdir_level}", log_file)
+        base.output_log(MODULE_NAME,
+            f"{TRIGGER_NAME} retry_max={retry_max} retry_wait_sec={retry_wait_sec} "
+            f"reconnect_interval_sec={reconnect_interval_sec} not_connectable_action={not_connectable_action}", log_file)
 
         # SMBセッション登録（ドメイン指定時は DOMAIN\user 形式にする）
         session_kwargs: Dict[str, Any] = {"port": smb_port}
@@ -215,10 +234,6 @@ def a_send_remote_file_trigger(
             session_kwargs["username"] = f"{smb_domain}\\{smb_username}" if smb_domain and "\\" not in smb_username else smb_username
         if smb_password:
             session_kwargs["password"] = smb_password
-        smbclient.register_session(smb_server, **session_kwargs)
-        if remote_dir:
-            smbclient.makedirs(smb_dir, exist_ok=True)
-        base.output_log(MODULE_NAME, f"{TRIGGER_NAME} SMB Session Registered. server={smb_server} port={smb_port}", log_file)
 
         # 運用系メトリクスの初期値登録
         base.metrics_add(MODULE_NAME, "total_ok_files", 0)
@@ -231,6 +246,119 @@ def a_send_remote_file_trigger(
                                  trigger_id=TRIGGER_NAME, log_file=log_file)
         stop_event.set()
         return None
+
+    """======== SMB の接続の状態（判定・リトライはこのトリガー。記録・再接続の間隔・通知は ConnectState） ========"""
+    smb_state = ConnectState(TRIGGER_NAME, smb_base, reconnect_interval_sec, MODULE_NAME, log_file)
+    smb_fail  = 0       # 連続失敗の回数（判定に使う。このトリガーの中だけで数える）
+    smb_ok    = False   # 直前の操作で、共有フォルダに届いていたか
+
+    def _smb_wait(seconds: float) -> None:
+        """stop_event を見ながら細かく待つ"""
+        _end = time.time() + seconds
+        while time.time() < _end and not stop_event.is_set():
+            time.sleep(min(0.05, max(0.0, _end - time.time())))
+
+    def _smb_connect() -> Optional[BaseException]:
+        """
+        セッションを登録し（切れていれば smbclient がつなぎ直す）、共有フォルダに届くか確かめる。成功なら None、失敗ならその例外
+        """
+        nonlocal smb_ok
+        try:
+            smbclient.register_session(smb_server, **session_kwargs)
+            if remote_dir:
+                smbclient.makedirs(smb_dir, exist_ok=True)   # 設定のアップロード先（無ければ作る）
+            smbclient.stat(smb_dir)
+            smb_ok = True
+            return None
+        except Exception as e:
+            smb_ok = False
+            return e
+
+    def _smb_count_fail(e: BaseException, what: str) -> bool:
+        """
+        接続の失敗を1回数える。連続 retry_max 回で not_connectable と判定して ConnectState へ報告し、False を返す
+        （続けるなら retry_wait_sec 待って True。リトライは画面のみに出し、ConnectState・ErrorIF へは報告しない）
+        """
+        nonlocal smb_fail
+        smb_fail += 1
+        if smb_fail >= retry_max:
+            smb_state.set_not_connectable(e)   # 判定：連続 retry_max 回の失敗
+            return False
+        if stop_event.is_set():
+            return False
+        base.output_log(MODULE_NAME,
+            f"{TRIGGER_NAME} Retry ({smb_fail}/{retry_max}). {what}  {smb_base}  ({type(e).__name__}: {e})")
+        _smb_wait(retry_wait_sec)
+        return True
+
+    def _smb_run(work, what: str) -> Tuple[bool, Any]:
+        """
+        work() を実行する。失敗したら共有フォルダに届くかを確かめ、届かなければ接続の失敗として
+        retry_wait_sec ごとにつなぎ直してやり直す（リトライ）。届くならファイル側の失敗として、例外のまま返す。
+        Returns: (実行できたか（not_connectable になったら False）, work() の戻り値)
+        """
+        nonlocal smb_fail
+        while True:
+            e = None if smb_ok else _smb_connect()
+            if e is None:
+                try:
+                    r = work()
+                    smb_fail = 0
+                    return True, r
+                except Exception as ex:
+                    if _smb_connect() is None:
+                        raise
+                    e = ex
+            if not _smb_count_fail(e, what):
+                return False, None
+
+    def _smb_reconnect_if_due() -> None:
+        """接続できない間、再接続の間隔が過ぎていれば再接続を試み、結果を ConnectState へ報告する"""
+        nonlocal smb_fail
+        if smb_state.should_try_reconnect():
+            e = _smb_connect()
+            if e is None:
+                smb_fail = 0
+                smb_state.set_connectable()
+            else:
+                smb_state.reconnect_failed(e)
+
+    def _smb_ready(seg_id: Any) -> bool:
+        """
+        送る前に、接続できる状態かを確かめる（接続できない間は再接続を試みる）。
+        接続できなければ not_connectable_action に従う: "wait" = 再接続できるまで待つ / "skip" = 送らない（False）
+        """
+        _smb_reconnect_if_due()
+        if smb_state.is_connectable():
+            return True
+        if not_connectable_action == "skip":
+            return False
+        base.output_log(MODULE_NAME,
+            f"{TRIGGER_NAME} NOT CONNECTABLE - Waiting for reconnect... seg_id={seg_id}  {smb_base}", log_file)
+        while not smb_state.is_connectable() and not stop_event.is_set():
+            _smb_reconnect_if_due()
+            if not smb_state.is_connectable():
+                _smb_wait(min(1.0, reconnect_interval_sec))
+        return smb_state.is_connectable()
+
+    """SMB の初回接続（retry_wait_sec ごとに retry_max 回まで試みる。つながらなくても止めない）"""
+    _smb_err: Optional[BaseException] = None
+    for _try in range(1, retry_max + 1):
+        _smb_err = _smb_connect()
+        if _smb_err is None:
+            base.output_log(MODULE_NAME, f"{TRIGGER_NAME} SMB Session Registered. server={smb_server} port={smb_port}", log_file)
+            break
+        if _try < retry_max and not stop_event.is_set():
+            base.output_log(MODULE_NAME,       # リトライは画面のみ
+                f"{TRIGGER_NAME} SMB Connect Retry ({_try}/{retry_max}). {smb_base}  ({type(_smb_err).__name__}: {_smb_err})")
+            _smb_wait(retry_wait_sec)
+    if _smb_err is not None:
+        _sig = ErrorIF.report_exception(_smb_err, phase="startup", category="comm",  # 初回接続の失敗を報告（A-21）
+                                         trigger_id=TRIGGER_NAME, log_file=log_file)
+        if _sig == SIGNAL_STOP:
+            stop_event.set()
+            return None
+        smb_state.set_not_connectable(_smb_err, report=False)   # ErrorIF へは上で phase=startup として通知済み
 
     """======== HELPER ========"""
     def _report_ok(file_name: str, msg: str) -> None:
@@ -318,10 +446,17 @@ def a_send_remote_file_trigger(
             _report_ng(file_name, f"File NOT Stable, skip. seg_id={seg_id}  {local_path}")
             return False
 
-        # アップロード
+        # アップロード（共有フォルダに届かないときはリトライ）。接続できない間は not_connectable_action に従う
+        #   "wait": 再接続できるまで待って、このファイルを送り直す / "skip": 送らず、後処理もしない（ファイルは元の場所に残る）
         try:
             mtime = os.path.getmtime(local_path)
-            uploaded, remote_path = _upload_to_smb(local_path, _remote_dir_for(local_path, remote_base), overwrite)
+            done, res = False, None
+            while not done and _smb_ready(seg_id):
+                done, res = _smb_run(
+                    lambda: _upload_to_smb(local_path, _remote_dir_for(local_path, remote_base), overwrite),
+                    f"seg_id={seg_id}  {file_name}")
+                if not done and (not_connectable_action == "skip" or stop_event.is_set()):
+                    break
         except Exception as e_up:
             _report_ng(file_name, f"Upload Error: seg_id={seg_id}  {local_path}  {e_up}")
             _sig = ErrorIF.report_exception(
@@ -329,6 +464,10 @@ def a_send_remote_file_trigger(
                 trigger_id=TRIGGER_NAME, log_file=log_file)
             return _sig == SIGNAL_STOP
 
+        if not done:
+            _report_ng(file_name, f"NOT CONNECTABLE - NOT Uploaded: seg_id={seg_id}  {local_path}")
+            return False
+        uploaded, remote_path = res
         if not uploaded:
             base.output_log(MODULE_NAME, f"Remote File Exists, skip (overwrite=false). seg_id={seg_id}  {remote_path}", log_file)
             return False
@@ -361,6 +500,7 @@ def a_send_remote_file_trigger(
                     post_queue.qsize() == 0 and
                     getattr(post_queue, "unfinished_tasks", 0) == 0):
                 break
+            _smb_reconnect_if_due()   # 接続できない間は再接続を試みる（間隔は ConnectState）
             continue
 
         """sentinel → 終了"""

@@ -4,8 +4,8 @@
 """
 ########################################
 # Act Trigger Module [Queue Template]
-# Ver: 06.e.20261102    By: IWATA, Y.'s Agent AI
-# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
+# Ver: 06.g.20261108    By: IWATA, Y.'s Agent AI
+# Mod: pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string、決まり文句の func_qmode などを削除。動作は変えない）
 ########################################
 セグメントを受け取って処理する Act を作るときの雛形（キューの扱い・通知の仕組みを含む）
 
@@ -15,7 +15,7 @@ a_template_stats_trigger  # IMQ から受け取り、統計量を求めて処理
 a_template_stq_trigger    # ストレージのキュー（STQ / SQLite）から受け取って処理する Act の雛形。
 _notify_segment           # 処理したセグメントを運用系メトリクスへ登録し、通知を要求する。
 
-位置づけ: 新しい Act は、この雛形の「処理を書く場所」を書き換えて作る。外部へ接続する Act の雛形は tri_s12_act_tmpl_connect。
+位置づけ: 新しい Act は、この雛形の「処理を書く場所」を書き換えて作る。外部へ接続する Act の雛形は tri_s12_act_tmpl_connect。STQ の部品は tri_s01_storage_queue を使う。
 設計意図: セグメント全体の処理と行ごとの処理を書く場所を分け、どちらにも対応できるようにする。処理するたびに指定した値を運用系メトリクスへ登録し、Teams 等への通知で処理の様子を確かめられるようにする。
 前提・制約: 実際に通知するかは Operator の teams_ondemand の設定による。
 """
@@ -28,7 +28,7 @@ import queue
 import sys
 import threading
 import traceback
-from   typing   import Any, Dict, List, Tuple, Sequence, Optional
+from   typing   import Any, Dict, List, Tuple, Sequence
 
 """external library"""
 ## Not Using
@@ -70,8 +70,8 @@ except ModuleNotFoundError:
         sys.exit(1)
 
 """local module"""
-import src.tri_s01_error_if       as err
 from   src.tri_s01_error_if       import ErrorIF, SIGNAL_STOP
+import src.tri_s01_storage_queue  as stq
 from   src.tri_s10_stream_wave_stat import init_stats, calc_stats  # Calc Stats（Act 共通。a_template_stats_trigger で使う）
 
 """system dir, file"""
@@ -182,9 +182,6 @@ def a_template_imq_trigger(
     Mod: 2026.10.02    By: IWATA, Y.'s Agent AI（オンデマンド通知を追加）
     """
     TRIGGER_NAME = "a_template_imq_trigger"
-    func_name = sys._getframe().f_code.co_name
-    func_obj = globals().get(func_name)
-    func_qmode = getattr(func_obj, "QMODE", "imq")
     
     """======== LOOP INIT ========"""
     try:
@@ -269,19 +266,19 @@ def a_template_imq_trigger(
                     print(f"row={_row:<3}", flush=True)  #### TBD(C-4) ####
                     print(f"val[0]=SegmentID  {_val[0]}", flush=True)  #### TBD(C-4) ####
                     print(f"val[1]=SegmentIndex  {_val[1]}", flush=True)  #### TBD(C-4) ####
-                    print(f"val[2:]=ActualValue", flush=True)  #### TBD(C-4) ####
+                    print("val[2:]=ActualValue", flush=True)  #### TBD(C-4) ####
                     for i, v in enumerate(_val[2:]): print(f"val[{str(i+2).rjust(2)}]  {v}", flush=True)  #### TBD(C-4) ####
                 
                 elif _row == 4:
                     print("", flush=True)  #### TBD(C-4) ####
-                    print(f"...", flush=True)  #### TBD(C-4) ####
+                    print("...", flush=True)  #### TBD(C-4) ####
                     
                 elif _row == len(segment)-1:
                     print("", flush=True)  #### TBD(C-4) ####
                     print(f"row={_row:<3}", flush=True)  #### TBD(C-4) ####
                     print(f"val[0]=SegmentID  {_val[0]}", flush=True)  #### TBD(C-4) ####
                     print(f"val[1]=SegmentIndex  {_val[1]}", flush=True)  #### TBD(C-4) ####
-                    print(f"val[2:]=ActualValue", flush=True)  #### TBD(C-4) ####
+                    print("val[2:]=ActualValue", flush=True)  #### TBD(C-4) ####
                     for i, v in enumerate(_val[2:]): print(f"val[{str(i+2).rjust(2)}]  {v}", flush=True)  #### TBD(C-4) ####
                     print("", flush=True)  #### TBD(C-4) ####
                     
@@ -456,13 +453,13 @@ def a_template_stq_trigger(
         base.output_log(MODULE_NAME, f"n_col_def={n_col_def}  col_def={col_def}", log_file)
         
         # Storage Queue接続設定
-        stq_path = base.get_storage_queue_path()
-        tab_name = base.get_storage_queue_tab()
-        conn     = base.stq_open(stq_path)
+        stq_path = stq.get_storage_queue_path()
+        tab_name = stq.get_storage_queue_tab()
+        conn     = stq.stq_open(stq_path)
         base.output_log(MODULE_NAME, f"queue_mode={func_qmode}  stq_path={stq_path}  tab_name={tab_name}", log_file)
         
         # SQL準備
-        sql = base.stq_prepare_sql(tab_name, base.coldef_to_table_col(col_def))# core と同じ型で渡す（B-4）
+        sql = stq.stq_prepare_sql(tab_name, stq.coldef_to_table_col(col_def))# core と同じ型で渡す（B-4）
         sql_r = sql["select_new_seg"]
         sql_u_seg = sql["update_seg_status"]
         sql_u_rec = sql["update_rec_status"]
@@ -514,7 +511,7 @@ def a_template_stq_trigger(
         """セグメント処理"""
         try:
             seg_id, seg_len, seg_ts_start, seg_ts_end = segment
-            rows = base.stq_select_new_seg(conn, sql_r, sql_u_seg, seg_id)
+            rows = stq.stq_select_new_seg(conn, sql_r, sql_u_seg, seg_id)
             if rows is None:
                 base.output_log(MODULE_NAME,
         f"Segment NOT Found or Select Error: seg_id={seg_id}", log_file)
@@ -548,14 +545,14 @@ def a_template_stq_trigger(
                         raise ValueError("__DUMMY__Error Raised in Segment Processing")####
 
                 """####（正常完了）####"""
-                base.stq_update_seg(conn, sql_u_seg, seg_id, 2)
+                stq.stq_update_seg(conn, sql_u_seg, seg_id, 2)
                 _seg_ok = True
 
             except Exception as e:
                 """####（異常時）####"""
                 base.output_log(MODULE_NAME, f"Error in Processing Segment [{seg_id}]:\n{e}")
                 try:
-                    base.stq_trans_seg_to_error(conn, sql_seg_err, sql_u_seg, seg_id, "Dummy Segment Error")
+                    stq.stq_trans_seg_to_error(conn, sql_seg_err, sql_u_seg, seg_id, "Dummy Segment Error")
                 except Exception as e_trans:
                     base.output_log(MODULE_NAME, f"Error in Trans Error: {e_trans}", log_file)
                     raise
@@ -581,13 +578,13 @@ def a_template_stq_trigger(
                                 raise ValueError("Error Raised in Record Processing")####
     
                         """####（正常完了）####"""
-                        base.stq_update_rec(conn, sql_u_rec, seg_id, row_num, 2)
+                        stq.stq_update_rec(conn, sql_u_rec, seg_id, row_num, 2)
     
                     except Exception as e:
                         """####（異常時）####"""
                         base.output_log(MODULE_NAME, f"__DUMMY__ Error in Processing Record [{row_num}] of Segment [{seg_id}]:\n{e}")
                         try:
-                            base.stq_trans_rec_to_error(conn, sql_rec_err, sql_u_rec, seg_id, row_num, "Dummy Record Error")
+                            stq.stq_trans_rec_to_error(conn, sql_rec_err, sql_u_rec, seg_id, row_num, "Dummy Record Error")
                         except Exception as e_trans:
                             base.output_log(MODULE_NAME, f"Error in Trans Error: {e_trans}", log_file)
                             raise
@@ -623,6 +620,6 @@ a_template_stq_trigger.CUT_LAST_ROW = True  # 終点行（変化後）を core �
 # Entry Point (for Debug)
 ########################################
 if __name__ == "__main__":
-    base.output_log(MODULE_NAME, f"Run Standalone.")
-    base.output_log(MODULE_NAME, f"test show Log")
+    base.output_log(MODULE_NAME, "Run Standalone.")
+    base.output_log(MODULE_NAME, "test show Log")
     base.output_log(MODULE_NAME, f"test save Log  {log_file}", log_file)

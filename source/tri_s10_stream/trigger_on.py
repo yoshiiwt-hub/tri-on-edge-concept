@@ -4,8 +4,8 @@
 """
 ########################################
 # TriEdge System BootLoader [Trigger On]
-# Ver: 02.b.20260930    By: IWATA, Y.'s Agent AI
-# Mod: モジュール名変更（tri_s 形式）に伴い import 名を更新
+# Ver: 02.c.20261108    By: IWATA, Y.'s Agent AI
+# Mod: pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string を削除。動作は変えない）
 ########################################
 """
 MODULE_NAME = "BOOT"
@@ -74,7 +74,7 @@ def main():
     
     try:
         """ 2. Add Path """
-        _output_log(f"Start to Add Path...", boot_log)
+        _output_log("Start to Add Path...", boot_log)
         
         if cur_dir not in sys.path:
             sys.path.append(cur_dir)
@@ -94,7 +94,7 @@ def main():
     
     try:
         """ 3. Boot Process """
-        _output_log(f"Start to Boot...", boot_log)
+        _output_log("Start to Boot...", boot_log)
         
         # Start Main Loop
         import src.tri_s09_operator as operator

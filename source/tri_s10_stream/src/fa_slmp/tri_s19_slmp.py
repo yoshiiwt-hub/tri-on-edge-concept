@@ -4,8 +4,8 @@
 """
 ########################################
 # SLMP通信ラッパー関数群
-# Ver: 03.h.20261102    By: IWATA, Y.'s Agent AI
-# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
+# Ver: 03.i.20261108    By: IWATA, Y.'s Agent AI
+# Mod: pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string を削除。動作は変えない）
 ########################################
 SLMP（3E フレーム・バイナリ）で MELSEC・キーエンス等の PLC を読み書きする通信部品
 
@@ -1199,6 +1199,6 @@ if __name__ == "__main__":
         except Exception as _ex:
             print(f"  Error: {_ex}")
     else:
-        print(f"\nSet SLMP_HOST to run live test against a real PLC.")
+        print("\nSet SLMP_HOST to run live test against a real PLC.")
 
     print("\nAll verification tests passed!")

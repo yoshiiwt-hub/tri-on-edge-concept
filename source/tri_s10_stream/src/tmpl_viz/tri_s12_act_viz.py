@@ -4,8 +4,8 @@
 """
 ########################################
 # Act Trigger Module [Viz Demo]
-# Ver: 05.c.20261102    By: IWATA, Y.'s Agent AI
-# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
+# Ver: 05.d.20261108    By: IWATA, Y.'s Agent AI
+# Mod: pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string、決まり文句の func_qmode などを削除。動作は変えない）
 ########################################
 セグメントの波形をグラフにして見せる、可視化のデモ
 
@@ -28,7 +28,7 @@ import sys
 import threading
 import time
 import traceback
-from   typing      import Any, Dict, List, Tuple, Sequence, Optional
+from   typing      import Any, Dict
 from   collections import deque
 
 """external library"""
@@ -74,7 +74,6 @@ except ModuleNotFoundError:
         sys.exit(1)
 
 """local module"""
-import src.tri_s01_error_if       as err
 from   src.tri_s01_error_if       import ErrorIF, SIGNAL_STOP
 
 """system dir, file"""
@@ -107,9 +106,6 @@ def a_plot_segment_trigger(
     Mod: 2026.04.06    By: IWATA,Y.
     """
     TRIGGER_NAME = "a_plot_segment_trigger"
-    func_name = sys._getframe().f_code.co_name
-    func_obj = globals().get(func_name)
-    func_qmode = getattr(func_obj, "QMODE", "imq")
     
     try:
         base.output_log(MODULE_NAME, f"{TRIGGER_NAME} Start.", log_file)
@@ -127,7 +123,6 @@ def a_plot_segment_trigger(
         field_color  = plot_config.get("field_color"  , "w")
         edge_color   = plot_config.get("edge_color"   , "k")
         line_color   = plot_config.get("line_color"   , "darkorange")
-        line_color_2 = plot_config.get("line_color_2" , "royalblue")
         line_w       = plot_config.get("line_w"       , 2.5)
         font_size    = plot_config.get("font_size"    , 10)        
         plt.rc("figure" , fc=field_color, ec=edge_color)
@@ -189,7 +184,7 @@ def a_plot_segment_trigger(
             """make Ack file"""
             if ack_ext:
                 time.sleep(0.5)
-                with open(f"{save_dir}/seg_{file_counter:03}_{seg_id}.png.done", "w") as f: pass
+                with open(f"{save_dir}/seg_{file_counter:03}_{seg_id}.png.done", "w"): pass
             
             base.output_log(MODULE_NAME, f"Saved segment plot: {filename}  (len={len(values)})")
             file_counter += 1
@@ -223,9 +218,6 @@ def a_plot_overlay_web_trigger(
     Mod: 2026.04.06    By: IWATA,Y.
     """
     TRIGGER_NAME = "a_plot_overlay_web_trigger"
-    func_name = sys._getframe().f_code.co_name
-    func_obj = globals().get(func_name)
-    func_qmode = getattr(func_obj, "QMODE", "imq")
 
     HTML_TEMPLATE = """
     <!DOCTYPE html>
@@ -389,5 +381,5 @@ a_plot_overlay_web_trigger.CUT_LAST_ROW = True  # 終点行（変化後）を co
 ########################################
 if __name__ == "__main__":
     print(f"{MODULE_NAME} Run Standalone.")    
-    base.output_log(MODULE_NAME, f"test show Log")
+    base.output_log(MODULE_NAME, "test show Log")
     base.output_log(MODULE_NAME, f"test save Log  {log_file}", log_file)
