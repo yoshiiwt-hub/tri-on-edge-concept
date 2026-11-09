@@ -8,6 +8,7 @@ scikit-learn
 matplotlib
 seaborn
 plotly
-pyarrow    # for parquet
+pyarrow          # for parquet
 openpyxl         # for Excel output (eda: profiler, vz_dt image_to_excel)
 opencv-python    # for image size in vz_dt image_to_excel (cv2)
+# japanize-matplotlib    # optional: Japanese font when running under /storage/ (Android, e.g. Pydroid 3). Elsewhere Meiryo is used
