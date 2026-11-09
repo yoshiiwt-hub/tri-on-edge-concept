@@ -4,8 +4,8 @@
 """
 ########################################
 # Act Trigger Module [Guard Band Diagnosis]
-# Ver: 02.d.20261102    By: IWATA, Y.'s Agent AI
-# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
+# Ver: 02.e.20261108    By: IWATA, Y.'s Agent AI
+# Mod: pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string、決まり文句の func_qmode などを削除。動作は変えない）
 ########################################
 波形を、事前に学習したガードバンド（上限・下限の帯）と比べて、異常な波形をエッジで見つける
 
@@ -29,7 +29,7 @@ import sys
 import threading
 import time
 import traceback
-from   typing   import Any, Dict, List, Tuple, Sequence, Optional
+from   typing   import Any, Dict, List, Tuple, Optional
 
 """external library"""
 ## Not Using
@@ -71,7 +71,6 @@ except ModuleNotFoundError:
         sys.exit(1)
 
 """local module"""
-import src.tri_s01_error_if       as err
 from   src.tri_s01_error_if       import ErrorIF, SIGNAL_STOP
 import src.tri_s19_util        as utl
 
@@ -213,9 +212,6 @@ def a_gb_diag_trigger(
         save_normal_wave / save_anomaly_wave が有効な場合、判定結果に応じて波形の生データ（全行）も別に CSV で保存する（tri_s12_act_csv と同じ5行ヘッダー）
     """
     TRIGGER_NAME = "a_gb_diag_trigger"
-    func_name = sys._getframe().f_code.co_name
-    func_obj = globals().get(func_name)
-    func_qmode = getattr(func_obj, "QMODE", "imq")
 
     try:
         base.output_log(MODULE_NAME, f"{TRIGGER_NAME} Start.", log_file)
@@ -519,6 +515,6 @@ a_gb_diag_trigger.CUT_LAST_ROW = True  # 終点行（変化後）を core が除
 # Entry Point (for Debug)
 ########################################
 if __name__ == "__main__":
-    base.output_log(MODULE_NAME, f"Run Standalone.")
-    base.output_log(MODULE_NAME, f"test show Log")
+    base.output_log(MODULE_NAME, "Run Standalone.")
+    base.output_log(MODULE_NAME, "test show Log")
     base.output_log(MODULE_NAME, f"test save Log  {log_file}", log_file)

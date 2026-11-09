@@ -45,6 +45,10 @@
 !/src/learn/tri_s21_learn_us_mt.py
 !/src/learn/_json_to_csv.py
 
+!/_env/
+/_env/*
+!/_env/requirements.txt
+
 # all sub dir
 !.gitignore
 !.gitkeep

@@ -4,8 +4,8 @@
 """
 ########################################
 # Stats Calculation & Excel Export
-# Ver: 01.c.20261102    By: IWATA, Y.'s Agent AI
-# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
+# Ver: 01.d.20261108    By: IWATA, Y.'s Agent AI
+# Mod: pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string を削除。動作は変えない）
 ########################################
 データの全体像をつかむための統計表（質的・量的の統計量・相関・主成分）を、Excel にまとめる
 
@@ -56,7 +56,7 @@ def _split_qualtv_quanttv(col_def: Dict[str, Any]) -> Tuple[List[str], List[str]
     isqualtv: List[str] = []
     isquanttv: List[str] = []
     for idx in sorted(col_def.keys(), key=lambda k: int(k)):
-        name, dtype, num_cat = col_def[idx][0], col_def[idx][1], col_def[idx][2]
+        name, num_cat = col_def[idx][0], col_def[idx][2]
         if num_cat == "category":
             isqualtv.append(name)
         elif num_cat == "numetory":
@@ -415,4 +415,4 @@ def save_stats_excel(stats: Dict[str, pd.DataFrame], outdir: str, title: str) ->
 
 def main(OUTDIR, TITLE, df, col_def):
     stats = calc_stats(df, col_def)
-    save_path = save_stats_excel(stats, OUTDIR, TITLE)
+    save_stats_excel(stats, OUTDIR, TITLE)

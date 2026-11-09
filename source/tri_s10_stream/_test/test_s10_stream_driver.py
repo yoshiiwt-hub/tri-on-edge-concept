@@ -4,8 +4,9 @@
 """
 ########################################
 # Integration Test [Stream Driver: Find -> Cutout -> Act]
-# Ver: 01.d.20261025    By: IWATA, Y.'s Agent AI
-# Mod: act_socket の ACK（区切り文字まで読む・NG の扱い）と、切断時の再送のテストを追加（A-8 / A-9）
+# Ver: 01.e.20261106    By: IWATA, Y.'s Agent AI
+# Mod: act_socket の設定の変更（skip_on_offline → not_connectable_action、retry_max）に合わせた。送り直しのテストは retry_max=1
+#      act_socket の ACK（区切り文字まで読む・NG の扱い）と、切断時の再送のテストを追加（A-8 / A-9）
 ########################################
 find / act を実際に呼び出して通す結合テスト
     find（入力）→ 波形切出し → act（出力）を、テスト用の簡易ドライバ（run_pipeline）でつなぐ。
@@ -558,7 +559,8 @@ class TestActSocketAckAndResend(PipelineTestCase):
 
     def _cfg(self, srv: SocketServer, **kw: Any) -> Dict[str, Any]:
         cfg = {"server_ip": "127.0.0.1", "server_port": srv.port, "timeout_sec": 2.0,
-               "reconnect_interval_sec": 0.2, "ack_mode": True, "skip_on_offline": False}
+               "reconnect_interval_sec": 0.2, "ack_mode": True, "not_connectable_action": "wait",
+               "retry_max": 1}   # 1回目の失敗で not_connectable（再送待ち・送り直しを確かめる。その場のリトライは test_s01_connect_state）
         cfg.update(kw)
         return cfg
 
@@ -630,10 +632,10 @@ class TestActSocketAckAndResend(PipelineTestCase):
         self.assertEqual(self._delta(before, "total_sent_segments"), 2)
         self.assertEqual(self._delta(before, "total_dropped_segments"), 0)
 
-    def test_disconnect_resend_in_background_with_skip_on_offline(self):
-        # skip_on_offline=true でも、キューが空のときの再接続で再送待ちを送る
+    def test_disconnect_resend_in_background_with_not_connectable_skip(self):
+        # not_connectable_action=skip でも、キューが空のときの再接続で再送待ちを送る
         srv = self.start_server(SocketServer(mode="put_only", close_after_puts=1))
-        errors = run_act_socket(act_socket.a_send_seg_trigger, self._cfg(srv, skip_on_offline=True),
+        errors = run_act_socket(act_socket.a_send_seg_trigger, self._cfg(srv, not_connectable_action="skip"),
                                 [make_seg(1, [1.0, 2.0])], wait_after_sec=2.5)
         self.assertEqual(errors, [])
         self.assertTrue(srv.wait_puts(3))

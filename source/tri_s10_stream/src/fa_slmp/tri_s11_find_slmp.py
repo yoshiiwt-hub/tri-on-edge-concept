@@ -4,8 +4,8 @@
 """
 ########################################
 # Find Trigger Module [SLMP]
-# Ver: 02.g.20261104    By: IWATA, Y.'s Agent AI
-# Mod: 公開版に向け、非公開・旧名のモジュールへの言及を整理
+# Ver: 02.i.20261108    By: IWATA, Y.'s Agent AI
+# Mod: pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string を削除。動作は変えない）
 ########################################
 MELSEC・キーエンス等の PLC から、SLMP でデバイス・ラベルの値を取り込む入口
 
@@ -13,7 +13,7 @@ MELSEC・キーエンス等の PLC から、SLMP でデバイス・ラベルの�
 f_find_slmp_trigger  # PLC のデバイス・ラベルを読み出し、列にしてキューに流す（フラグが立っている間だけ読むこともできる）。
 
 位置づけ: 通信は tri_s19_slmp、生データから列への変換は tri_s19_extract_bitword を使う。書込みは tri_s12_act_slmp が受け持つ。
-設計意図: 読み出す範囲（bulk_read）と列への割り当て（column_register_map）を分け、まとめて読んでから列に振り分けることで、要求の回数を減らす。フラグを監視するモードでは、読出しを許可するだけでフラグは戻さず、PLC 側の制御に干渉しない。
+設計意図: 読み出す範囲（bulk_read）と列への割り当て（column_register_map）を分け、まとめて読んでから列に振り分けることで、要求の回数を減らす。フラグを監視するモードでは、読出しを許可するだけでフラグは戻さず、PLC 側の制御に干渉しない。通信に失敗したら、その場で接続し直して読み直し（リトライ）、続けて失敗したら接続できない（not_connectable）とする。接続できない状態の記録・再接続の間隔は tri_s01_connect_state に任せる。
 前提・制約: 波形の開始・終了の判定はこのモジュールでは行わない（StreamCore の monitor 設定で判定する）。検証時は slmp_server.py（TriEdge 本体とは独立）を起動して接続する。
 """
 MODULE_NAME = "FIND_SLMP"
@@ -68,6 +68,7 @@ except ModuleNotFoundError:
 """local module"""
 from   src.tri_s01_error_if          import ErrorIF, SIGNAL_STOP
 from   src.tri_s19_extract_bitword import compile_column_register_map
+from   src.tri_s01_connect_state   import ConnectState
 import src.fa_slmp.tri_s19_slmp   as slmp
 
 """system dir, file"""
@@ -163,9 +164,14 @@ def f_find_slmp_trigger(
             "scale"     : 任意
         }
         int4/int4_u/float4 は下位word+上位wordの順（slmp.decode_dword/decode_float と同じ並び）
+
+    ■ 接続の扱い
+        リトライ: 接続・読出しの通信に失敗したら、retry_wait_sec ごとに接続し直して読み直す（このトリガーの中だけ）
+            連続 retry_max 回失敗したら、接続できない（not_connectable）と判定して ConnectState へ報告する（読めたら回数を 0 に戻す）
+        再接続: 接続できない間は reconnect_interval_sec ごとに試み、結果を ConnectState へ報告する（その間は値を送らない）
+        接続の状態（ConnectState が登録。FIND_SLMP）: connect_state / not_connectable_since / reconnect_fail_count / total_not_connectable
     """
     TRIGGER_NAME = "f_find_slmp_trigger"
-    _SIG_OFFLINE = f"ConnectionFailed.comm.loop.{TRIGGER_NAME}"
 
     # ---- STARTUP ----
     try:
@@ -174,6 +180,10 @@ def f_find_slmp_trigger(
         plc_port    = int(config.get("plc_port", 5010))
         plc_timeout = float(config.get("plc_timeout_sec", 5.0))
         reconnect_interval_sec = float(config.get("reconnect_interval_sec", 10.0))
+        retry_max              = int(config.get("retry_max", 3))
+        retry_wait_sec         = float(config.get("retry_wait_sec", 1.0))
+        if retry_max < 1 or retry_wait_sec < 0:
+            raise ValueError(f"config['retry_max'] must be >= 1 and config['retry_wait_sec'] >= 0. Got: {retry_max} / {retry_wait_sec}")
 
         if not plc_host:
             raise ValueError("plc_host is required.")
@@ -245,7 +255,6 @@ def f_find_slmp_trigger(
         if not column_register_map:
             raise ValueError("column_register_map is required.")
         n_col_def = len(col_def)
-        col_keys  = [col_def[k][0] for k in sorted(col_def.keys())]
 
         compiled_column_map = compile_column_register_map(
             column_register_map, col_def, bulk_read_raw,
@@ -261,7 +270,8 @@ def f_find_slmp_trigger(
         base.output_log(MODULE_NAME,
             f"{TRIGGER_NAME} plc={plc_host}:{plc_port} flag_mode={flag_mode} "
             f"n_bulk_specs={len(bulk_specs)} n_col_def={n_col_def} "
-            f"polling_ms={polling_sec*1000:.0f}",
+            f"polling_ms={polling_sec*1000:.0f} retry_max={retry_max} retry_wait_sec={retry_wait_sec} "
+            f"reconnect_interval_sec={reconnect_interval_sec}",
             log_file)
 
     except Exception as e:
@@ -310,58 +320,88 @@ def f_find_slmp_trigger(
         while time.time() < _wait_end and not stop_event.is_set():
             time.sleep(min(0.05, max(0.0, _wait_end - time.time())))
 
-    # ---- INITIAL CONNECT ----
+    # ---- 接続の状態（判定・リトライはこのトリガー。記録・再接続の間隔・通知は ConnectState） ----
     plc_client = slmp.SlmpClient(plc_host, plc_port, timeout_sec=plc_timeout, auto_reconnect=False)
-    is_online  = False
-    try:
-        plc_client.connect()
-        is_online = True
+    conn_state = ConnectState(TRIGGER_NAME, f"{plc_host}:{plc_port}", reconnect_interval_sec, MODULE_NAME, log_file)
+    connected  = False   # PLC とつながっているか（このトリガーの中の印）
+    fail_count = 0       # 連続失敗の回数（判定に使う。このトリガーの中だけで数える）
+
+    def _drop() -> None:
+        """接続を切る"""
+        nonlocal connected
+        try: plc_client.disconnect()
+        except Exception: pass
+        connected = False
+
+    def _try_connect() -> Optional[BaseException]:
+        """接続を1回試みる。成功なら None、失敗ならその例外"""
+        nonlocal connected
+        try:
+            plc_client.connect()
+            connected = True
+            return None
+        except Exception as e:
+            _drop()
+            return e
+
+    def _on_fail(e: BaseException) -> None:
+        """
+        接続・読出しの通信の失敗を数える。連続 retry_max 回で not_connectable と判定して ConnectState へ報告する。
+        それ未満なら retry_wait_sec 待って、次のループでつなぎ直す（リトライは画面のみ。ConnectState・ErrorIF へは報告しない）
+        """
+        nonlocal fail_count
+        _drop()
+        fail_count += 1
+        if fail_count >= retry_max:
+            conn_state.set_not_connectable(e)   # 判定：連続 retry_max 回の失敗
+            return
         base.output_log(MODULE_NAME,
-            f"{TRIGGER_NAME} PLC Connected. {plc_host}:{plc_port}", log_file)
-    except Exception as e:
-        _sig = ErrorIF.report_exception(e, phase="startup", category="comm",  # 初回接続の失敗を報告（A-21）
+            f"{TRIGGER_NAME} Retry ({fail_count}/{retry_max}). {plc_host}:{plc_port}  ({type(e).__name__}: {e})")
+        _responsive_wait(retry_wait_sec)
+
+    # ---- INITIAL CONNECT（retry_wait_sec ごとに retry_max 回まで試みる） ----
+    _err: Optional[BaseException] = None
+    for _try in range(1, retry_max + 1):
+        _err = _try_connect()
+        if _err is None:
+            base.output_log(MODULE_NAME,
+                f"{TRIGGER_NAME} PLC Connected. {plc_host}:{plc_port}", log_file)
+            break
+        if _try < retry_max and not stop_event.is_set():
+            base.output_log(MODULE_NAME,       # リトライは画面のみ
+                f"{TRIGGER_NAME} Connect Retry ({_try}/{retry_max}). {plc_host}:{plc_port}  ({type(_err).__name__}: {_err})")
+            _responsive_wait(retry_wait_sec)
+    if _err is not None:
+        _sig = ErrorIF.report_exception(_err, phase="startup", category="comm",  # 初回接続の失敗を報告（A-21）
                                          trigger_id=TRIGGER_NAME, log_file=log_file)
         if _sig == SIGNAL_STOP:
             stop_event.set()
             return None
-        base.output_log(MODULE_NAME,
-            f"{TRIGGER_NAME} Initial Connect FAILED. Go Offline. ({type(e).__name__}: {e})", log_file)
+        conn_state.set_not_connectable(_err, report=False)   # ErrorIF へは上で phase=startup として通知済み
 
     """======== MAIN LOOP START ========"""
-    reconnect_fail_count = 0
-    last_reconnect_try   = 0.0
     count = 0
 
     while not stop_event.is_set():
         try:
-            if not is_online:
-                """ オフラインモード：再接続を試みる """
-                if time.time() - last_reconnect_try >= reconnect_interval_sec:
-                    last_reconnect_try = time.time()
-                    try:
-                        plc_client.connect()
-                        is_online            = True
-                        reconnect_fail_count = 0
-                        base.output_log(MODULE_NAME,
-                            f"{TRIGGER_NAME} Re-Connected. {plc_host}:{plc_port}  Back to Online.", log_file)
+            if not conn_state.is_connectable():
+                """ 接続できない間：再接続の間隔ごとに再接続を試みる（値は送らない） """
+                if conn_state.should_try_reconnect():
+                    e_rc = _try_connect()
+                    if e_rc is None:
+                        fail_count = 0
+                        conn_state.set_connectable()
+                    else:
+                        conn_state.reconnect_failed(e_rc)
+                if not conn_state.is_connectable():
+                    ErrorIF.emit_summary_if_needed()
+                    _responsive_wait(min(2.0, reconnect_interval_sec))
+                    continue
 
-                    except Exception as e:
-                        reconnect_fail_count += 1
-                        ErrorIF.report_event({
-                            "trigger_id": TRIGGER_NAME,
-                            "phase"     : "loop",
-                            "category"  : "comm",
-                            "exc_type"  : type(e).__name__,
-                            "message"   : f"Re-Connect Failed ({reconnect_fail_count} times). {plc_host}:{plc_port}",
-                            "signature" : _SIG_OFFLINE,
-                        })
-                        base.output_log(MODULE_NAME,
-                            f"{TRIGGER_NAME} Re-Connect Failed ({reconnect_fail_count}). "
-                            f"{plc_host}:{plc_port}  ({type(e).__name__}): {e}", log_file)
-
-                ErrorIF.emit_summary_if_needed()
-                time.sleep(2)
-                continue
+            """ リトライ中は、ここで接続し直す（失敗は下の except で数える） """
+            if not connected:
+                plc_client.connect()
+                connected = True
 
             """ オンラインモード """
             # 1. トリガーフラグ確認（flag_mode=True の場合、device/label両対応。読出し許可ゲート）
@@ -380,6 +420,7 @@ def f_find_slmp_trigger(
             for col_idx, col_func in compiled_column_map:
                 row[col_idx] = col_func(bulk_buffers)
             queue_out.put((count, row))
+            fail_count = 0   # 読めたら連続失敗の回数を 0 に戻す
             base.output_log(MODULE_NAME,
                 f"{TRIGGER_NAME} Queued #{count}: {row[:4]}...", log_file)
             count += 1
@@ -387,27 +428,7 @@ def f_find_slmp_trigger(
             _responsive_wait(polling_sec)
 
         except (ConnectionError, OSError, TimeoutError, RuntimeError) as e:
-            _sig = ErrorIF.report_exception(
-                e,
-                phase="loop",
-                category="comm",
-                trigger_id=TRIGGER_NAME,
-                log_file=log_file,
-            )
-            try:
-                plc_client.disconnect()
-            except Exception:
-                pass
-            is_online            = False
-            reconnect_fail_count = 0
-            last_reconnect_try   = time.time()
-            base.output_log(MODULE_NAME,
-                f"{TRIGGER_NAME} Connection Lost. to Offline. {plc_host}:{plc_port}", log_file)
-
-            if _sig == SIGNAL_STOP:
-                stop_event.set()
-                break
-
+            _on_fail(e)   # 通信の失敗：切断して数える（連続 retry_max 回で not_connectable）
             continue
 
         except Exception as e:
@@ -426,10 +447,7 @@ def f_find_slmp_trigger(
             continue
 
     """======== MAIN LOOP END ========"""
-    try:
-        plc_client.disconnect()
-    except Exception:
-        pass
+    _drop()
 
     base.output_log(MODULE_NAME, f"{TRIGGER_NAME} Stop.", log_file)
     return None

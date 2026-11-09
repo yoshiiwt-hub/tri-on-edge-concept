@@ -4,8 +4,8 @@
 """
 ########################################
 # Find Trigger Module [JSON]
-# Ver: 01.h.20261104    By: IWATA, Y.'s Agent AI
-# Mod: 公開版に向け、非公開・旧名のモジュールへの言及を整理
+# Ver: 01.j.20261108    By: IWATA, Y.'s Agent AI
+# Mod: pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string を削除。動作は変えない）
 ########################################
 フォルダに置かれた JSON ファイルを読み、必要な値を抜き出してレコードとして取り込む入口
 
@@ -26,7 +26,7 @@ import sys
 import threading
 import time
 import traceback
-from   typing   import Any, Dict, List, Tuple, Sequence, Optional
+from   typing   import Any, Dict, List, Optional
 
 """external library"""
 ## NOT Use
@@ -102,8 +102,8 @@ def f_read_json_trigger(
     Mod: 2026.10.02    By: IWATA, Y.'s Agent AI（after_read を追加）
 
     [動作の要点]（旧モジュール Docstring から移動）
-        ファイル I/O エラー（OSError / PermissionError）はオフラインモードへ移行し、同種エラーが頻発（デフォルト: 60秒に5回）していれば
-        offline_interval_sec だけ読み取りをスキップする。それ以外の予期しない例外はオフライン化せず、そのファイルをスキップして継続する
+        ファイル I/O エラー（OSError / PermissionError）は報告し、同種エラーが頻発（デフォルト: 60秒に5回）していれば
+        pause_interval_sec だけ読み取りを休む（休止）。それ以外の予期しない例外は休止せず、そのファイルをスキップして継続する
         handle_json=true の場合、JSON ファイル自体（ファイル名）も1レコードとして送る
         after_read が delete / move / rename の場合、ack_file_ext を指定していれば ACK ファイルも削除する
         出力列: col_def の列順に、common_data（dir_path, file_name, common の値）+ item_key_map の値（handle_json 時は file_name）
@@ -132,7 +132,7 @@ def f_read_json_trigger(
         stable_check_n = int(config.get("stable_check_n", "1"))
         ack_ext        = config.get("ack_file_ext", "").replace(".", "")
         check_ack      = bool(ack_ext)
-        offline_interval_sec = config.get("offline_interval_sec", 30)
+        pause_interval_sec = config.get("pause_interval_sec", 30)
 
         """ SETTING（読み取った後の処理） """
         after_read = config.get("after_read", "keep")
@@ -162,7 +162,7 @@ def f_read_json_trigger(
             f"{TRIGGER_NAME} monitor_dir={monitor_dir} search_subdir={search_subdir} "
             f"interval_sec={interval_sec} pfx_sfx={pfx_sfx} encoding={encoding} "
             f"stable_check_n={stable_check_n} check_ack={check_ack} ack_ext={ack_ext} "
-            f"offline_interval_sec={offline_interval_sec}", log_file)
+            f"pause_interval_sec={pause_interval_sec}", log_file)
 
         """ SETTING（マッピング） """
         mapping_conf = config.get("mapping_config", {})
@@ -228,19 +228,19 @@ def f_read_json_trigger(
         return False
 
     """======== LOOP START ========"""
-    # is_online: ファイル読み取りが正常に行えているか（tri_s11_find_text_csv と同様）
-    is_online = True
-    last_retry_try = time.time()
+    # is_paused: 読込みエラーの頻発で、読取りを休んでいるか（休止。tri_s11_find_text_csv と同様）
+    is_paused = False
+    pause_start = time.time()
     count = 0
 
     while not stop_event.is_set():
         try:
             """エラー頻発により読み取り休止"""
-            if not is_online:
-                if time.time() - last_retry_try >= offline_interval_sec:
-                    last_retry_try = time.time()
-                    is_online = True
-                    base.output_log(MODULE_NAME, f"{TRIGGER_NAME} Retry Reading. Back to Online.", log_file)
+            if is_paused:
+                if time.time() - pause_start >= pause_interval_sec:
+                    pause_start = time.time()
+                    is_paused = False
+                    base.output_log(MODULE_NAME, f"{TRIGGER_NAME} Pause End. Retry Reading.", log_file)
                 else:
                     time.sleep(interval_sec)
                     continue
@@ -369,15 +369,15 @@ def f_read_json_trigger(
                         break
 
                 except (OSError, PermissionError) as e:
-                    """ファイルI/Oエラー → オフライン化を検討"""
+                    """ファイルI/Oエラー → 頻発していれば休止"""
                     ErrorIF.report_exception(e, phase="loop", category="comm", trigger_id=TRIGGER_NAME, log_file=log_file)
 
                     signature = err.make_signature(type(e).__name__, "comm", "loop", TRIGGER_NAME)
                     if ErrorIF.is_frequent(signature):
-                        is_online = False
-                        last_retry_try = time.time()
+                        is_paused = True
+                        pause_start = time.time()
                         base.output_log(MODULE_NAME,
-                            f"{TRIGGER_NAME} Read Errors Frequent. Go Offline for {offline_interval_sec}s.", log_file)
+                            f"{TRIGGER_NAME} Read Errors Frequent. Pause Reading for {pause_interval_sec}s.", log_file)
                         break
 
                     continue

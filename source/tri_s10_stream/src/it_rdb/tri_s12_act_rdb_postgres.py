@@ -4,8 +4,8 @@
 """
 ########################################
 # TriEdge Act Trigger Module
-# Ver: 07.e.20261102    By: IWATA, Y.'s Agent AI
-# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
+# Ver: 07.g.20261108    By: IWATA, Y.'s Agent AI
+# Mod: pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string、決まり文句の func_qmode などを削除。動作は変えない）
 ########################################
 セグメントの値や統計量を、上位 DB（PostgreSQL）のテーブルへ登録する出口
 
@@ -14,7 +14,7 @@ a_insert_to_pg_trigger      # セグメントの全行を PostgreSQL のテー�
 a_calc_stats_to_pg_trigger  # セグメントの統計量を求め、PostgreSQL のテーブルへ INSERT する。
 
 位置づけ: エッジで集めたデータを上位側の DB に蓄積する。DB の接続・テーブル管理の部品は tri_s19_rdb_postgres、統計量の算出は tri_s10_stream_wave_stat を使う。
-設計意図: 接続時にテーブルを自動で作成し、既存のテーブルとの構成の食い違いを確かめて、配置時の設定ミスを起動時に見つける。登録しない列・JSONB の列・UTC から日本時間に変える列・固定値を入れる列を設定で指定し、DB 側のテーブル設計に合わせられるようにする。接続が切れた場合はつなぎ直す。
+設計意図: 接続時にテーブルを自動で作成し、既存のテーブルとの構成の食い違いを確かめて、配置時の設定ミスを起動時に見つける。登録しない列・JSONB の列・UTC から日本時間に変える列・固定値を入れる列を設定で指定し、DB 側のテーブル設計に合わせられるようにする。接続に失敗したり途中で切れたりしたら、つなぎ直してセグメントを書き直し（リトライ）、続けて失敗したら接続できない（not_connectable）とする。接続できない状態の記録・再接続の間隔は tri_s01_connect_state に任せる。
 前提・制約: 接続情報は環境変数（PG_HOST / PG_PORT / PG_DB / PG_USER / PG_PASS）で渡す。
 """
 MODULE_NAME = "ACT_RDB"
@@ -26,13 +26,12 @@ import json
 import os
 import queue
 import sys
-import threading
 import time
 import traceback
-from   typing   import Any, Dict, List, Tuple, Sequence, Optional
+from   typing   import Any, Dict, Sequence, Optional
 
 """external library"""
-import pg8000.dbapi as pg_dbapi
+## pg8000（PostgreSQL）は tri_s19_rdb_postgres が使う
 
 
 """[Bootstrap] Adjust Path and Import Base Module"""
@@ -73,9 +72,9 @@ except ModuleNotFoundError:
         sys.exit(1)
 
 """local module"""
-import src.tri_s01_error_if as err
 from   src.tri_s01_error_if import ErrorIF, SIGNAL_STOP
 import src.it_rdb.tri_s19_rdb_postgres as rdb
+from   src.tri_s01_connect_state import ConnectState
 from   src.tri_s10_stream_wave_stat import init_stats, calc_stats  # Calc Stats（Act 共通。B-9）
 
 """system dir, file"""
@@ -129,7 +128,10 @@ def a_insert_to_pg_trigger(
     """
     IMQ のセグメントデータを PostgreSQL テーブルへ INSERT する Act Trigger
     - 接続時、テーブル自動作成 + スキーマ整合チェック
-    - 接続断時は再接続を試みる
+    - 接続の失敗（つながらない・途中で切れた）は retry_wait_sec ごとにつなぎ直してセグメントを書き直す（リトライ）
+        連続 retry_max 回で not_connectable と判定して ConnectState へ報告し、reconnect_interval_sec ごとに再接続する
+        接続できない間に届いたセグメントは not_connectable_action（skip / wait）に従う。1行だけの INSERT エラーは、その行を飛ばす
+        テーブルの作成・構成の確認は、初めてつながったときに行う（起動時につながらなくても止まらない）
     - hide_col_loc / jsonb_col_loc / utc_to_jst_col_loc: 登録しない列 / jsonb にする列 / UTC→JST 変換する列
         Find と同じ列番号のリスト。先頭の固定4列は "seg_id" / "seg_ind" / "seg_ts" / "seg_status" の名前で書く
         （既定: ["seg_ind", "seg_ts", "seg_status"] / [5] / [4]）
@@ -141,9 +143,6 @@ def a_insert_to_pg_trigger(
     """
 
     TRIGGER_NAME = "a_pg_insert_imq_trigger"
-    func_name  = sys._getframe().f_code.co_name
-    func_obj   = globals().get(func_name)
-    func_qmode = getattr(func_obj, "QMODE", "imq")
 
     """======== LOOP INIT ========"""
     try:
@@ -199,29 +198,24 @@ def a_insert_to_pg_trigger(
         if not pg_table:
             raise ValueError("config['pg_table'] is NOT Set.")
 
-        pg_reconnect_max  = int(config.get("pg_reconnect_max" , 3))
-        pg_reconnect_wait = float(config.get("pg_reconnect_wait", 5.0))
+        retry_max              = int(config.get("retry_max", 3))
+        retry_wait_sec         = float(config.get("retry_wait_sec", 5.0))
+        reconnect_interval_sec = float(config.get("reconnect_interval_sec", 10.0))
+        if retry_max < 1 or retry_wait_sec < 0:
+            raise ValueError(f"config['retry_max'] must be >= 1 and config['retry_wait_sec'] >= 0. Got: {retry_max} / {retry_wait_sec}")
+        pg_target = f"{config.get('pg_host')}:{config.get('pg_port')}/{config.get('pg_dbname')}"
+        not_connectable_action = str(config.get("not_connectable_action", "skip")).strip().lower()
+        if not_connectable_action not in ("skip", "wait"):
+            raise ValueError(f"config['not_connectable_action'] must be 'skip' / 'wait'. Got: {not_connectable_action!r}")
         exclude_last_row  = bool(config.get("exclude_last_row" , True))
 
         # INSERT SQL 生成
         sql_insert = rdb.pg_make_insert_sql(pg_schema, pg_table, col_def_selected)
         base.output_log(MODULE_NAME, f"INSERT SQL: {sql_insert}", log_file)
 
-        # PostgreSQL 初期接続
-        conn_pg = None
-        conn_pg = rdb.pg_connect_if_needed(conn_pg, config, TRIGGER_NAME, log_file)
-
-        # テーブル自動作成（存在しなければ）
-        rdb.pg_ensure_table(conn_pg, pg_schema, pg_table, col_def_selected, log_file)
-
-        # スキーマ整合チェック（既存テーブルも含め必ず実行）
-        schema_errors = rdb.pg_check_schema(conn_pg, pg_schema, pg_table, col_def_selected, log_file)
-        if schema_errors:
-            raise ValueError(
-                f"DB Schema Invalid."
-                f'  table="{pg_schema}"."{pg_table}"'
-                f"  errors={schema_errors}"
-            )
+        base.output_log(MODULE_NAME,
+            f"{TRIGGER_NAME} pg={pg_target}  retry_max={retry_max}  retry_wait_sec={retry_wait_sec}  "
+            f"reconnect_interval_sec={reconnect_interval_sec}" + f"  not_connectable_action={not_connectable_action}", log_file)
 
         base.output_log(MODULE_NAME,
             f"{TRIGGER_NAME} Init OK."
@@ -234,6 +228,146 @@ def a_insert_to_pg_trigger(
             trigger_id=TRIGGER_NAME, log_file=log_file)
         stop_event.set()
         return None
+
+    """======== 接続の状態（判定・リトライはこのトリガー。記録・再接続の間隔・通知は ConnectState） ========"""
+    conn_pg    = None
+    conn_state = ConnectState(TRIGGER_NAME, pg_target, reconnect_interval_sec, MODULE_NAME, log_file)
+    fail_count = 0      # 連続失敗の回数（判定に使う。このトリガーの中だけで数える）
+    table_ready = False                          # テーブルの作成・構成の確認が済んだか（初めてつながったときに行う）
+    fatal_error: Optional[BaseException] = None  # テーブルの準備の失敗（接続は生きている。起動時の設定の誤りと同じく止める）
+
+    def _responsive_wait(seconds: float) -> None:
+        """stop_event を見ながら細かく待つ"""
+        _end = time.time() + seconds
+        while time.time() < _end and not stop_event.is_set():
+            time.sleep(min(0.05, max(0.0, _end - time.time())))
+
+    def _drop_pg() -> None:
+        """接続を閉じる"""
+        nonlocal conn_pg
+        if conn_pg is not None:
+            try: conn_pg.close()
+            except Exception: pass
+        conn_pg = None
+
+    def _conn_lost() -> bool:
+        """失敗のあと、接続が切れたかを確かめる（ロールバックしてから SELECT 1）。切れていれば True"""
+        if conn_pg is None:
+            return True
+        try:
+            conn_pg.rollback()
+        except Exception:
+            return True
+        return not rdb.pg_ping(conn_pg)
+
+    def _prepare_table() -> None:
+        """テーブルを作成し（無ければ）、構成を確かめる"""
+        nonlocal table_ready
+        rdb.pg_ensure_table(conn_pg, pg_schema, pg_table, col_def_selected, log_file)   # テーブル自動作成（存在しなければ）
+        schema_errors = rdb.pg_check_schema(conn_pg, pg_schema, pg_table, col_def_selected, log_file)  # スキーマ整合チェック（既存テーブルも含め必ず実行）
+        if schema_errors:
+            raise ValueError(
+                f"DB Schema Invalid."
+                f'  table="{pg_schema}"."{pg_table}"'
+                f"  errors={schema_errors}"
+            )
+        table_ready = True
+
+    def _try_pg() -> Optional[BaseException]:
+        """
+        接続を確かめ、切れていればつなぎ直す（1回）。初めてつながったときはテーブルを準備する。成功なら None、失敗ならその例外
+        （テーブルの準備が、接続は生きているのに失敗したときは fatal_error に残す）
+        """
+        nonlocal conn_pg, fatal_error
+        try:
+            conn_pg = rdb.pg_connect_if_needed(conn_pg, config, TRIGGER_NAME, log_file)
+            if not table_ready:
+                _prepare_table()
+            return None
+        except Exception as e:
+            if conn_pg is not None and not _conn_lost():
+                fatal_error = e
+            _drop_pg()
+            return e
+
+    def _count_fail(e: BaseException, what: str) -> bool:
+        """
+        接続の失敗を1回数える。連続 retry_max 回で not_connectable と判定して ConnectState へ報告し、False を返す
+        （続けるなら retry_wait_sec 待って True。リトライは画面のみに出し、ConnectState・ErrorIF へは報告しない）
+        """
+        nonlocal fail_count
+        _drop_pg()
+        fail_count += 1
+        if fail_count >= retry_max:
+            conn_state.set_not_connectable(e)   # 判定：連続 retry_max 回の失敗
+            return False
+        if stop_event.is_set():
+            return False
+        base.output_log(MODULE_NAME,
+            f"{TRIGGER_NAME} Retry ({fail_count}/{retry_max}). {what}  {pg_target}  ({type(e).__name__}: {e})")
+        _responsive_wait(retry_wait_sec)
+        return True
+
+    def _run_with_retry(work, what: str) -> bool:
+        """
+        work() を実行する。接続の失敗（つながらない・途中で切れた）は retry_wait_sec ごとにつなぎ直して、最初からやり直す（リトライ）。
+        接続は生きているのに失敗したとき（データのエラー）は、例外のまま返す。not_connectable になったら False
+        """
+        nonlocal fail_count
+        while True:
+            e = _try_pg()
+            if fatal_error is not None:
+                return False
+            if e is None:
+                try:
+                    work()
+                    fail_count = 0
+                    return True
+                except Exception as ex:
+                    if not _conn_lost():
+                        raise
+                    e = ex
+            if not _count_fail(e, what):
+                return False
+
+    def _reconnect_if_due() -> None:
+        """接続できない間、再接続の間隔が過ぎていれば再接続を試み、結果を ConnectState へ報告する"""
+        nonlocal fail_count
+        if conn_state.should_try_reconnect():
+            e = _try_pg()
+            if fatal_error is not None:
+                return
+            if e is None:
+                fail_count = 0
+                conn_state.set_connectable()
+            else:
+                conn_state.reconnect_failed(e)
+
+    """初回接続（retry_wait_sec ごとに retry_max 回まで試みる）"""
+    _err: Optional[BaseException] = None
+    for _try in range(1, retry_max + 1):
+        _err = _try_pg()
+        if _err is None or fatal_error is not None:
+            break
+        if _try < retry_max and not stop_event.is_set():
+            base.output_log(MODULE_NAME,       # リトライは画面のみ
+                f"{TRIGGER_NAME} Connect Retry ({_try}/{retry_max}). {pg_target}  ({type(_err).__name__}: {_err})")
+            _responsive_wait(retry_wait_sec)
+    if fatal_error is not None:
+        ErrorIF.report_exception(fatal_error, phase="startup", category="config",
+                                 trigger_id=TRIGGER_NAME, log_file=log_file)
+        stop_event.set()
+        _drop_pg()
+        return None
+    if _err is not None:
+        _sig = ErrorIF.report_exception(_err, phase="startup", category="comm",  # 初回接続の失敗を報告（A-21）
+                                         trigger_id=TRIGGER_NAME, log_file=log_file)
+        if _sig == SIGNAL_STOP:
+            stop_event.set()
+            return None
+        conn_state.set_not_connectable(_err, report=False)   # ErrorIF へは上で phase=startup として通知済み
+
+    skipped_seg_count = 0
 
     """======== LOOP START ========"""
     base.output_log(MODULE_NAME, f"{TRIGGER_NAME} Start Loop...", log_file)
@@ -249,6 +383,9 @@ def a_insert_to_pg_trigger(
                 getattr(post_queue, "unfinished_tasks", 0) == 0
             )
             if exit_loop:
+                break
+            _reconnect_if_due()   # 接続できない間は再接続を試みる（間隔は ConnectState）
+            if fatal_error is not None:
                 break
             continue
 
@@ -282,22 +419,30 @@ def a_insert_to_pg_trigger(
 
             base.output_log(MODULE_NAME, f"{TRIGGER_NAME} Segment 処理開始: seg_id={seg_id}  rows={len(segment)}")
 
-            """セグメント単位 PostgreSQL 書込み"""
-            try:
-                # PostgreSQL 接続確認・再接続
-                for _retry in range(pg_reconnect_max + 1):
-                    try:
-                        conn_pg = rdb.pg_connect_if_needed(conn_pg, config, TRIGGER_NAME, log_file)
-                        break
+            """==== 接続できない間は、再接続の間隔ごとに再接続を試みる（セグメントが途切れず届く間も再接続できるように） ===="""
+            _reconnect_if_due()
+            if fatal_error is not None:
+                break
 
-                    except pg_dbapi.DatabaseError as e_conn:
-                        base.output_log(MODULE_NAME,
-                            f"PostgreSQL 接続失敗 ({_retry+1}/{pg_reconnect_max}): {e_conn}", log_file)
-                        if _retry >= pg_reconnect_max:
-                            raise
-                        time.sleep(pg_reconnect_wait)
-                        conn_pg = None
+            """==== 接続できない間に届いたセグメントの処理（not_connectable_action） ===="""
+            if not conn_state.is_connectable():
+                if not_connectable_action == "skip":
+                    skipped_seg_count += 1
+                    base.output_log(MODULE_NAME,
+                        f"WARNING  NOT CONNECTABLE - Segment Skipped. "
+                        f"seg_id={seg_id}  total_skipped={skipped_seg_count}  {pg_target}", log_file)
+                    continue
+                base.output_log(MODULE_NAME,
+                    f"{TRIGGER_NAME} NOT CONNECTABLE - Waiting for reconnect... seg_id={seg_id}", log_file)
+                while not conn_state.is_connectable() and not stop_event.is_set() and not (fatal_error is not None):
+                    _reconnect_if_due()
+                    if not conn_state.is_connectable():
+                        _responsive_wait(min(1.0, reconnect_interval_sec))
+                if stop_event.is_set() or fatal_error is not None:
+                    break
 
+            """セグメント単位 PostgreSQL 書込み（接続の失敗はリトライ）"""
+            def _insert_segment() -> None:
                 # レコード単位 INSERT
                 n_ok  = 0
                 n_err = 0
@@ -305,7 +450,6 @@ def a_insert_to_pg_trigger(
                 try:
                     _now = dt.now()  # col_custom_value の現在時刻（セグメント内の全行で同じ時刻）
                     for row_num, row_val in enumerate(segment, start=1):
-                        _ind = 0
                         row_val_selected = [v for i, v in enumerate(row_val) if i not in hide_col_loc]
 
                         # jsonb 列を json.dumps() に変換
@@ -342,6 +486,7 @@ def a_insert_to_pg_trigger(
 
                         except Exception as e_rec:
                             # レコード単体エラー：ロールバックしてスキップ（最初の数行は「列名=値」も出して原因の列を追えるようにする）
+                            # 接続が切れていればロールバックも失敗するので、そのまま上へ（セグメントを書き直す）
                             conn_pg.rollback()
                             _msg = f"Record INSERT Error: seg_id={seg_id}  row={row_num}  {e_rec}"
                             if n_err < _ERR_VALUES_MAX_ROWS:
@@ -349,20 +494,24 @@ def a_insert_to_pg_trigger(
                             base.output_log(MODULE_NAME, _msg, log_file)
                             n_err += 1
                 finally:
-                    cur.close()
+                    try: cur.close()
+                    except Exception: pass
 
                 # セグメント全体コミット
                 conn_pg.commit()
                 base.output_log(MODULE_NAME, f"PostgreSQL INSERT 完了: seg_id={seg_id}  ok={n_ok}  err={n_err}")
 
+            try:
+                written = _run_with_retry(_insert_segment, f"seg_id={seg_id}")
             except Exception as e_seg:
-                try:
-                    conn_pg.rollback()
-                except Exception:
-                    pass
                 base.output_log(MODULE_NAME,
                     f"Segment Error: seg_id={seg_id}  {e_seg}", log_file)
                 raise
+            if fatal_error is not None:
+                break
+            if not written:
+                base.output_log(MODULE_NAME,
+                    f"WARNING  {TRIGGER_NAME} Segment NOT Written (not connectable). seg_id={seg_id}", log_file)
 
         except Exception as e:
             _sig = ErrorIF.report_exception(
@@ -377,6 +526,13 @@ def a_insert_to_pg_trigger(
             post_queue.task_done()
 
     """======== LOOP END ========"""
+    if fatal_error is not None:
+        ErrorIF.report_exception(fatal_error, phase="loop", category="config",   # テーブルの準備の失敗（設定の誤り）→ 止める
+                                 trigger_id=TRIGGER_NAME, log_file=log_file)
+        stop_event.set()
+    if skipped_seg_count > 0:
+        base.output_log(MODULE_NAME,
+            f"WARNING  {TRIGGER_NAME} Stopped with {skipped_seg_count} segment(s) skipped (NOT CONNECTABLE).", log_file)
 
     if conn_pg is not None:
         try:
@@ -408,7 +564,7 @@ def a_calc_stats_to_pg_trigger(
            （tri_s10_stream_wave_stat の compile_register_map / build_stats を使用）
         3. 算出結果を PostgreSQL テーブルへ INSERT
         - 接続時、テーブル自動作成 + スキーマ整合チェック（a_insert_to_pg_trigger と同様）
-        - 接続断時は再接続を試みる
+        - 接続の失敗は retry_wait_sec ごとにつなぎ直して書き直す（a_insert_to_pg_trigger と同様。連続 retry_max 回で not_connectable）
 
     ■ column_register_map / out_coldef フォーマット
         column_register_map と out_coldef の仕様は tri_s10_stream_wave_stat.compile_register_map
@@ -423,15 +579,14 @@ def a_calc_stats_to_pg_trigger(
 
     ■ PostgreSQL設定
         pg_schema, pg_table        : 保存先テーブル
-        pg_reconnect_max/wait      : 再接続設定
+        retry_max / retry_wait_sec : リトライの回数・間隔（既定 3 / 5.0）
+        reconnect_interval_sec     : 接続できない間の再接続の間隔（既定 10.0）
+        not_connectable_action     : 接続できない間に届いたセグメント（skip / wait。既定 skip）
         exclude_last_row           : セグメント終点行（変化後の行）を集計対象から除外するか（デフォルト: true）
         upsert                     : true の場合 ON CONFLICT(seg_id) DO UPDATE で上書き（デフォルト: false）
     """
 
     TRIGGER_NAME = "a_calc_stats_to_pg_trigger"
-    func_name  = sys._getframe().f_code.co_name
-    func_obj   = globals().get(func_name)
-    func_qmode = getattr(func_obj, "QMODE", "imq")
 
     """======== LOOP INIT ========"""
     try:
@@ -464,8 +619,15 @@ def a_calc_stats_to_pg_trigger(
         if not pg_table:
             raise ValueError("config['pg_table'] is NOT Set.")
 
-        pg_reconnect_max  = int(config.get("pg_reconnect_max" , 3))
-        pg_reconnect_wait = float(config.get("pg_reconnect_wait", 5.0))
+        retry_max              = int(config.get("retry_max", 3))
+        retry_wait_sec         = float(config.get("retry_wait_sec", 5.0))
+        reconnect_interval_sec = float(config.get("reconnect_interval_sec", 10.0))
+        if retry_max < 1 or retry_wait_sec < 0:
+            raise ValueError(f"config['retry_max'] must be >= 1 and config['retry_wait_sec'] >= 0. Got: {retry_max} / {retry_wait_sec}")
+        pg_target = f"{config.get('pg_host')}:{config.get('pg_port')}/{config.get('pg_dbname')}"
+        not_connectable_action = str(config.get("not_connectable_action", "skip")).strip().lower()
+        if not_connectable_action not in ("skip", "wait"):
+            raise ValueError(f"config['not_connectable_action'] must be 'skip' / 'wait'. Got: {not_connectable_action!r}")
         exclude_last_row  = bool(config.get("exclude_last_row" , True))
         upsert            = bool(config.get("upsert", False))
 
@@ -479,21 +641,9 @@ def a_calc_stats_to_pg_trigger(
             sql_insert += f' ON CONFLICT ("{col_def_selected[0][0]}") DO UPDATE SET {_update_cols}'
         base.output_log(MODULE_NAME, f"INSERT SQL: {sql_insert}", log_file)
 
-        # PostgreSQL 初期接続
-        conn_pg = None
-        conn_pg = rdb.pg_connect_if_needed(conn_pg, config, TRIGGER_NAME, log_file)
-
-        # テーブル自動作成（存在しなければ）
-        rdb.pg_ensure_table(conn_pg, pg_schema, pg_table, col_def_selected, log_file)
-
-        # スキーマ整合チェック（既存テーブルも含め必ず実行）
-        schema_errors = rdb.pg_check_schema(conn_pg, pg_schema, pg_table, col_def_selected, log_file)
-        if schema_errors:
-            raise ValueError(
-                f"DB Schema Invalid."
-                f'  table="{pg_schema}"."{pg_table}"'
-                f"  errors={schema_errors}"
-            )
+        base.output_log(MODULE_NAME,
+            f"{TRIGGER_NAME} pg={pg_target}  retry_max={retry_max}  retry_wait_sec={retry_wait_sec}  "
+            f"reconnect_interval_sec={reconnect_interval_sec}" + f"  not_connectable_action={not_connectable_action}", log_file)
 
         base.output_log(MODULE_NAME,
             f"{TRIGGER_NAME} Init OK."
@@ -506,6 +656,146 @@ def a_calc_stats_to_pg_trigger(
             trigger_id=TRIGGER_NAME, log_file=log_file)
         stop_event.set()
         return None
+
+    """======== 接続の状態（判定・リトライはこのトリガー。記録・再接続の間隔・通知は ConnectState） ========"""
+    conn_pg    = None
+    conn_state = ConnectState(TRIGGER_NAME, pg_target, reconnect_interval_sec, MODULE_NAME, log_file)
+    fail_count = 0      # 連続失敗の回数（判定に使う。このトリガーの中だけで数える）
+    table_ready = False                          # テーブルの作成・構成の確認が済んだか（初めてつながったときに行う）
+    fatal_error: Optional[BaseException] = None  # テーブルの準備の失敗（接続は生きている。起動時の設定の誤りと同じく止める）
+
+    def _responsive_wait(seconds: float) -> None:
+        """stop_event を見ながら細かく待つ"""
+        _end = time.time() + seconds
+        while time.time() < _end and not stop_event.is_set():
+            time.sleep(min(0.05, max(0.0, _end - time.time())))
+
+    def _drop_pg() -> None:
+        """接続を閉じる"""
+        nonlocal conn_pg
+        if conn_pg is not None:
+            try: conn_pg.close()
+            except Exception: pass
+        conn_pg = None
+
+    def _conn_lost() -> bool:
+        """失敗のあと、接続が切れたかを確かめる（ロールバックしてから SELECT 1）。切れていれば True"""
+        if conn_pg is None:
+            return True
+        try:
+            conn_pg.rollback()
+        except Exception:
+            return True
+        return not rdb.pg_ping(conn_pg)
+
+    def _prepare_table() -> None:
+        """テーブルを作成し（無ければ）、構成を確かめる"""
+        nonlocal table_ready
+        rdb.pg_ensure_table(conn_pg, pg_schema, pg_table, col_def_selected, log_file)   # テーブル自動作成（存在しなければ）
+        schema_errors = rdb.pg_check_schema(conn_pg, pg_schema, pg_table, col_def_selected, log_file)  # スキーマ整合チェック（既存テーブルも含め必ず実行）
+        if schema_errors:
+            raise ValueError(
+                f"DB Schema Invalid."
+                f'  table="{pg_schema}"."{pg_table}"'
+                f"  errors={schema_errors}"
+            )
+        table_ready = True
+
+    def _try_pg() -> Optional[BaseException]:
+        """
+        接続を確かめ、切れていればつなぎ直す（1回）。初めてつながったときはテーブルを準備する。成功なら None、失敗ならその例外
+        （テーブルの準備が、接続は生きているのに失敗したときは fatal_error に残す）
+        """
+        nonlocal conn_pg, fatal_error
+        try:
+            conn_pg = rdb.pg_connect_if_needed(conn_pg, config, TRIGGER_NAME, log_file)
+            if not table_ready:
+                _prepare_table()
+            return None
+        except Exception as e:
+            if conn_pg is not None and not _conn_lost():
+                fatal_error = e
+            _drop_pg()
+            return e
+
+    def _count_fail(e: BaseException, what: str) -> bool:
+        """
+        接続の失敗を1回数える。連続 retry_max 回で not_connectable と判定して ConnectState へ報告し、False を返す
+        （続けるなら retry_wait_sec 待って True。リトライは画面のみに出し、ConnectState・ErrorIF へは報告しない）
+        """
+        nonlocal fail_count
+        _drop_pg()
+        fail_count += 1
+        if fail_count >= retry_max:
+            conn_state.set_not_connectable(e)   # 判定：連続 retry_max 回の失敗
+            return False
+        if stop_event.is_set():
+            return False
+        base.output_log(MODULE_NAME,
+            f"{TRIGGER_NAME} Retry ({fail_count}/{retry_max}). {what}  {pg_target}  ({type(e).__name__}: {e})")
+        _responsive_wait(retry_wait_sec)
+        return True
+
+    def _run_with_retry(work, what: str) -> bool:
+        """
+        work() を実行する。接続の失敗（つながらない・途中で切れた）は retry_wait_sec ごとにつなぎ直して、最初からやり直す（リトライ）。
+        接続は生きているのに失敗したとき（データのエラー）は、例外のまま返す。not_connectable になったら False
+        """
+        nonlocal fail_count
+        while True:
+            e = _try_pg()
+            if fatal_error is not None:
+                return False
+            if e is None:
+                try:
+                    work()
+                    fail_count = 0
+                    return True
+                except Exception as ex:
+                    if not _conn_lost():
+                        raise
+                    e = ex
+            if not _count_fail(e, what):
+                return False
+
+    def _reconnect_if_due() -> None:
+        """接続できない間、再接続の間隔が過ぎていれば再接続を試み、結果を ConnectState へ報告する"""
+        nonlocal fail_count
+        if conn_state.should_try_reconnect():
+            e = _try_pg()
+            if fatal_error is not None:
+                return
+            if e is None:
+                fail_count = 0
+                conn_state.set_connectable()
+            else:
+                conn_state.reconnect_failed(e)
+
+    """初回接続（retry_wait_sec ごとに retry_max 回まで試みる）"""
+    _err: Optional[BaseException] = None
+    for _try in range(1, retry_max + 1):
+        _err = _try_pg()
+        if _err is None or fatal_error is not None:
+            break
+        if _try < retry_max and not stop_event.is_set():
+            base.output_log(MODULE_NAME,       # リトライは画面のみ
+                f"{TRIGGER_NAME} Connect Retry ({_try}/{retry_max}). {pg_target}  ({type(_err).__name__}: {_err})")
+            _responsive_wait(retry_wait_sec)
+    if fatal_error is not None:
+        ErrorIF.report_exception(fatal_error, phase="startup", category="config",
+                                 trigger_id=TRIGGER_NAME, log_file=log_file)
+        stop_event.set()
+        _drop_pg()
+        return None
+    if _err is not None:
+        _sig = ErrorIF.report_exception(_err, phase="startup", category="comm",  # 初回接続の失敗を報告（A-21）
+                                         trigger_id=TRIGGER_NAME, log_file=log_file)
+        if _sig == SIGNAL_STOP:
+            stop_event.set()
+            return None
+        conn_state.set_not_connectable(_err, report=False)   # ErrorIF へは上で phase=startup として通知済み
+
+    skipped_seg_count = 0
 
     """======== LOOP START ========"""
     base.output_log(MODULE_NAME, f"{TRIGGER_NAME} Start Loop...", log_file)
@@ -521,6 +811,9 @@ def a_calc_stats_to_pg_trigger(
                 getattr(post_queue, "unfinished_tasks", 0) == 0
             )
             if exit_loop:
+                break
+            _reconnect_if_due()   # 接続できない間は再接続を試みる（間隔は ConnectState）
+            if fatal_error is not None:
                 break
             continue
 
@@ -558,52 +851,57 @@ def a_calc_stats_to_pg_trigger(
                 f"{TRIGGER_NAME} 統計量算出完了: seg_id={seg_id}  rows={stats_dict.get('seg_rows')}"
                 f"  keys={len(stats_dict)}", log_file)
 
-            """セグメント単位 PostgreSQL 書込み"""
-            try:
-                # PostgreSQL 接続確認・再接続
-                for _retry in range(pg_reconnect_max + 1):
-                    try:
-                        conn_pg = rdb.pg_connect_if_needed(conn_pg, config, TRIGGER_NAME, log_file)
-                        break
+            """==== 接続できない間は、再接続の間隔ごとに再接続を試みる（セグメントが途切れず届く間も再接続できるように） ===="""
+            _reconnect_if_due()
+            if fatal_error is not None:
+                break
 
-                    except pg_dbapi.DatabaseError as e_conn:
-                        base.output_log(MODULE_NAME,
-                            f"PostgreSQL 接続失敗 ({_retry+1}/{pg_reconnect_max}): {e_conn}", log_file)
-                        if _retry >= pg_reconnect_max:
-                            raise
-                        time.sleep(pg_reconnect_wait)
-                        conn_pg = None
+            """==== 接続できない間に届いたセグメントの処理（not_connectable_action） ===="""
+            if not conn_state.is_connectable():
+                if not_connectable_action == "skip":
+                    skipped_seg_count += 1
+                    base.output_log(MODULE_NAME,
+                        f"WARNING  NOT CONNECTABLE - Segment Skipped. "
+                        f"seg_id={seg_id}  total_skipped={skipped_seg_count}  {pg_target}", log_file)
+                    continue
+                base.output_log(MODULE_NAME,
+                    f"{TRIGGER_NAME} NOT CONNECTABLE - Waiting for reconnect... seg_id={seg_id}", log_file)
+                while not conn_state.is_connectable() and not stop_event.is_set() and not (fatal_error is not None):
+                    _reconnect_if_due()
+                    if not conn_state.is_connectable():
+                        _responsive_wait(min(1.0, reconnect_interval_sec))
+                if stop_event.is_set() or fatal_error is not None:
+                    break
 
-                # col_def_selected の列順に値を組み立て（build_statsで欠落したキーはNULL）
-                row_val = tuple(
-                    stats_dict.get(col_def_selected[i][0]) for i in range(len(col_def_selected))
-                )
+            """セグメント単位 PostgreSQL 書込み（接続の失敗はリトライ）"""
+            # col_def_selected の列順に値を組み立て（build_statsで欠落したキーはNULL）
+            row_val = tuple(
+                stats_dict.get(col_def_selected[i][0]) for i in range(len(col_def_selected))
+            )
 
+            def _insert_stats() -> None:
                 cur = conn_pg.cursor()
                 try:
                     cur.execute(sql_insert, row_val)
                     conn_pg.commit()
                     base.output_log(MODULE_NAME,
                         f"PostgreSQL INSERT 完了: seg_id={seg_id}", log_file)
-
-                except Exception as e_ins:
-                    conn_pg.rollback()
-                    base.output_log(MODULE_NAME,
-                        f"Stats INSERT Error: seg_id={seg_id}  {e_ins}"
-                        f"\n    values: {_format_row_values(col_def_selected, row_val)}", log_file)
-                    raise
-
                 finally:
-                    cur.close()
+                    try: cur.close()
+                    except Exception: pass
 
-            except Exception as e_seg:
-                try:
-                    conn_pg.rollback()
-                except Exception:
-                    pass
+            try:
+                written = _run_with_retry(_insert_stats, f"seg_id={seg_id}")
+            except Exception as e_ins:
                 base.output_log(MODULE_NAME,
-                    f"Segment Error: seg_id={seg_id}  {e_seg}", log_file)
+                    f"Stats INSERT Error: seg_id={seg_id}  {e_ins}"
+                    f"\n    values: {_format_row_values(col_def_selected, row_val)}", log_file)
                 raise
+            if fatal_error is not None:
+                break
+            if not written:
+                base.output_log(MODULE_NAME,
+                    f"WARNING  {TRIGGER_NAME} Segment NOT Written (not connectable). seg_id={seg_id}", log_file)
 
         except Exception as e:
             _sig = ErrorIF.report_exception(
@@ -618,6 +916,13 @@ def a_calc_stats_to_pg_trigger(
             post_queue.task_done()
 
     """======== LOOP END ========"""
+    if fatal_error is not None:
+        ErrorIF.report_exception(fatal_error, phase="loop", category="config",   # テーブルの準備の失敗（設定の誤り）→ 止める
+                                 trigger_id=TRIGGER_NAME, log_file=log_file)
+        stop_event.set()
+    if skipped_seg_count > 0:
+        base.output_log(MODULE_NAME,
+            f"WARNING  {TRIGGER_NAME} Stopped with {skipped_seg_count} segment(s) skipped (NOT CONNECTABLE).", log_file)
 
     if conn_pg is not None:
         try:

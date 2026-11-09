@@ -4,8 +4,8 @@
 """
 ########################################
 # Act Trigger Module [Guard Band Diagnosis - Visualization Demo]
-# Ver: 02.c.20261102    By: IWATA, Y.'s Agent AI
-# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
+# Ver: 02.d.20261108    By: IWATA, Y.'s Agent AI
+# Mod: pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string、決まり文句の func_qmode などを削除。動作は変えない）
 ########################################
 ガードバンドによる判定の結果を、画像で確かめるためのデモ
 
@@ -20,17 +20,14 @@ _plot_diag             # 判定結果を画像にする（matplotlib を使用�
 MODULE_NAME = "ACT_GB_Diag_Viz"
 
 """standard library"""
-import csv
 from   datetime import datetime as dt
-import json
 import os
 import queue
 import re
 import sys
 import threading
-import time
 import traceback
-from   typing   import Any, Dict, List, Tuple, Sequence, Optional
+from   typing   import Any, Dict, List, Tuple, Optional
 
 """external library"""
 import matplotlib
@@ -74,9 +71,7 @@ except ModuleNotFoundError:
         sys.exit(1)
 
 """local module"""
-import src.tri_s01_error_if       as err
 from   src.tri_s01_error_if       import ErrorIF, SIGNAL_STOP
-import src.tri_s19_util        as utl
 
 """system dir, file"""
 system_root = base.get_system_root()
@@ -233,9 +228,6 @@ def a_gb_diag_viz_trigger(
     Mod: 2026.07.18    By: IWATA,Y.
     """
     TRIGGER_NAME = "a_gb_diag_viz_trigger"
-    func_name = sys._getframe().f_code.co_name
-    func_obj = globals().get(func_name)
-    func_qmode = getattr(func_obj, "QMODE", "imq")
 
     try:
         base.output_log(MODULE_NAME, f"{TRIGGER_NAME} Start.", log_file)
@@ -453,6 +445,6 @@ a_gb_diag_viz_trigger.CUT_LAST_ROW = True  # 終点行（変化後）を core �
 # Entry Point (for Debug)
 ########################################
 if __name__ == "__main__":
-    base.output_log(MODULE_NAME, f"Run Standalone.")
-    base.output_log(MODULE_NAME, f"test show Log")
+    base.output_log(MODULE_NAME, "Run Standalone.")
+    base.output_log(MODULE_NAME, "test show Log")
     base.output_log(MODULE_NAME, f"test save Log  {log_file}", log_file)

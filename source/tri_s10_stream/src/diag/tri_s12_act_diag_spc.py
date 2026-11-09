@@ -4,8 +4,8 @@
 """
 ########################################
 # Act Trigger Module [SPC Diagnosis]
-# Ver: 02.d.20261102    By: IWATA, Y.'s Agent AI
-# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
+# Ver: 02.e.20261108    By: IWATA, Y.'s Agent AI
+# Mod: pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string、決まり文句の func_qmode などを削除。動作は変えない）
 ########################################
 セグメント内の値の並びを SPC のルールで判定し、工程の異常な傾向を見つける
 
@@ -28,7 +28,7 @@ import sys
 import threading
 import time
 import traceback
-from   typing   import Any, Dict, List, Tuple, Sequence, Optional
+from   typing   import Any, Dict, List, Optional
 
 """external library"""
 ## Not Using
@@ -70,7 +70,6 @@ except ModuleNotFoundError:
         sys.exit(1)
 
 """local module"""
-import src.tri_s01_error_if       as err
 from   src.tri_s01_error_if       import ErrorIF, SIGNAL_STOP
 from   src.diag.tri_s19_calc_spc    import compile_spc_rules, check_spc
 import src.tri_s19_util        as utl
@@ -168,9 +167,6 @@ def a_spc_diag_trigger(
             seg_id・異常判定・使用モデル名・ルールごとの違反点数・違反点のインデックス一覧・違反点の実測値一覧
     """
     TRIGGER_NAME = "a_spc_diag_trigger"
-    func_name = sys._getframe().f_code.co_name
-    func_obj = globals().get(func_name)
-    func_qmode = getattr(func_obj, "QMODE", "imq")
 
     try:
         base.output_log(MODULE_NAME, f"{TRIGGER_NAME} Start.", log_file)
@@ -443,6 +439,6 @@ a_spc_diag_trigger.CUT_LAST_ROW = True  # 終点行（変化後）を core が�
 # Entry Point (for Debug)
 ########################################
 if __name__ == "__main__":
-    base.output_log(MODULE_NAME, f"Run Standalone.")
-    base.output_log(MODULE_NAME, f"test show Log")
+    base.output_log(MODULE_NAME, "Run Standalone.")
+    base.output_log(MODULE_NAME, "test show Log")
     base.output_log(MODULE_NAME, f"test save Log  {log_file}", log_file)

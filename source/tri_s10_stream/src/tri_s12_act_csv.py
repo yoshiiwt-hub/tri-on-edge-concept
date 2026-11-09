@@ -4,8 +4,8 @@
 """
 ########################################
 # Act Trigger Module [CSV Save]
-# Ver: 02.c.20261102    By: IWATA, Y.'s Agent AI
-# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
+# Ver: 02.d.20261108    By: IWATA, Y.'s Agent AI
+# Mod: pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string を削除。動作は変えない）
 ########################################
 セグメントの値や統計量を、CSV ファイルとしてエッジに保存する出口
 
@@ -368,6 +368,6 @@ a_save_stats_trigger.CUT_LAST_ROW = True  # 終点行（変化後）を core が
 # Entry Point (for Debug)
 ########################################
 if __name__ == "__main__":
-    base.output_log(MODULE_NAME, f"Run Standalone.")
-    base.output_log(MODULE_NAME, f"test show Log")
+    base.output_log(MODULE_NAME, "Run Standalone.")
+    base.output_log(MODULE_NAME, "test show Log")
     base.output_log(MODULE_NAME, f"test save Log  {log_file}", log_file)

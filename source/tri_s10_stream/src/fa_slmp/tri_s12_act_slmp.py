@@ -4,8 +4,9 @@
 """
 ########################################
 # Act Trigger Module [SLMP]
-# Ver: 03.e.20261104    By: IWATA, Y.'s Agent AI
-# Mod: 公開版に向け、非公開・旧名のモジュールへの言及を整理
+# Ver: 03.f.20261106    By: IWATA, Y.'s Agent AI
+# Mod: 接続できない状態の管理を共通の tri_s01_connect_state（ConnectState）に置き換え。接続・書込みの通信の失敗は
+#      retry_wait_sec ごとにその場で接続し直して書き込み直し（リトライ）、連続 retry_max 回で not_connectable とする。skip_on_offline → not_connectable_action
 ########################################
 セグメントの値や統計量を、SLMP で PLC に書き戻す出口
 
@@ -14,7 +15,7 @@ a_slmp_write_trigger  # セグメントの値または統計量を、SLMP で PL
 _plc_write            # 書込みの設定1件に従って PLC に書き込む（ビットは他のビットを壊さない方法で書く）。
 
 位置づけ: 通信は tri_s19_slmp、統計量の算出は tri_s10_stream_wave_stat を使う。読出しは tri_s11_find_slmp が受け持つ。
-設計意図: 書込みの完了・異常をフラグ（done_flag / error_flag）で PLC に知らせ、PLC 側がフラグを落とすハンドシェイクで確実に受け渡す（こちらからは落とさない）。ビットデバイスへの書込みは読んでから書き戻し（Read-Modify-Write）、同じワードの他のビットを壊さない。
+設計意図: 書込みの完了・異常をフラグ（done_flag / error_flag）で PLC に知らせ、PLC 側がフラグを落とすハンドシェイクで確実に受け渡す（こちらからは落とさない）。ビットデバイスへの書込みは読んでから書き戻し（Read-Modify-Write）、同じワードの他のビットを壊さない。通信に失敗したら、その場で接続し直してセグメントを書き込み直し（リトライ）、続けて失敗したら接続できない（not_connectable）とする。接続できない状態の記録・再接続の間隔は tri_s01_connect_state に任せる。
 前提・制約: GT SoftGOT2000 へ接続する場合は、ラベルは使えず、network_no / pc_no を相手の通信設定に合わせる。検証時は slmp_server.py（TriEdge 本体とは独立）を起動して接続する。
 """
 MODULE_NAME = "ACT_SLMP"
@@ -28,7 +29,7 @@ import sys
 import threading
 import time
 import traceback
-from   typing   import Any, Dict, List
+from   typing   import Any, Dict, List, Optional
 
 """[Bootstrap] Adjust Path and Import Base Module"""
 try:
@@ -69,6 +70,7 @@ except ModuleNotFoundError:
 
 """local module"""
 from   src.tri_s01_error_if               import ErrorIF, SIGNAL_STOP
+from   src.tri_s01_connect_state          import ConnectState
 from   src.tri_s10_stream_wave_stat          import init_stats, calc_stats  # Calc Stats（Act 共通。B-9）
 import src.fa_slmp.tri_s19_slmp as slmp
 
@@ -209,9 +211,16 @@ def a_slmp_write_trigger(
     """
     セグメントデータをSLMPでPLCに書込む
     Mod: 2026.06.20    By: IWATA,Y.
+
+    [接続の扱い]
+        リトライ: 接続・書込みの通信に失敗したら、retry_wait_sec ごとに接続し直して、そのセグメントを最初から書き込み直す（このトリガーの中だけ）
+            連続 retry_max 回失敗したら、接続できない（not_connectable）と判定して ConnectState へ報告する（書き込めたら回数を 0 に戻す）
+        再接続: 接続できない間は reconnect_interval_sec ごとに試み、結果を ConnectState へ報告する
+        接続できない間に届いたセグメント: not_connectable_action = "skip"（書き込まずにスキップ）/ "wait"（再接続できるまで待つ）
+        接続の状態（ConnectState が登録。ACT_SLMP）: connect_state / not_connectable_since / reconnect_fail_count / total_not_connectable
     """
     TRIGGER_NAME = "a_slmp_write_trigger"
-    _SIG_OFFLINE = f"ConnectionFailed.comm.loop.{TRIGGER_NAME}"
+    _COMM_ERRORS = (ConnectionResetError, BrokenPipeError, OSError, RuntimeError)   # 通信の失敗として扱う例外
 
     def _responsive_wait(seconds: float) -> None:
         """stop_event を見ながら細かく待つ（即座に停止へ反応できるように。tri_s11_find_slmp.py 等と同様）"""
@@ -303,7 +312,13 @@ def a_slmp_write_trigger(
         plc_port    = int(config.get("plc_port", 5010))
         plc_timeout = float(config.get("plc_timeout_sec", 5.0))
         reconnect_interval_sec = float(config.get("reconnect_interval_sec", 10.0))
-        skip_on_offline = bool(config.get("skip_on_offline", True))
+        retry_max              = int(config.get("retry_max", 3))
+        retry_wait_sec         = float(config.get("retry_wait_sec", 1.0))
+        not_connectable_action = str(config.get("not_connectable_action", "skip")).strip().lower()
+        if retry_max < 1 or retry_wait_sec < 0:
+            raise ValueError(f"config['retry_max'] must be >= 1 and config['retry_wait_sec'] >= 0. Got: {retry_max} / {retry_wait_sec}")
+        if not_connectable_action not in ("skip", "wait"):
+            raise ValueError(f"config['not_connectable_action'] must be 'skip' / 'wait'. Got: {not_connectable_action!r}")
 
         # network_no / pc_no（省略時は自局指定のデフォルト: network_no=0x00, pc_no=0xFF）
         # GT SoftGOT2000のマイコン接続(Ethernet)等、SLMP対応PLC以外に接続する場合は、
@@ -316,8 +331,8 @@ def a_slmp_write_trigger(
 
         base.output_log(MODULE_NAME,
             f"plc={plc_host}:{plc_port} network_no={network_no} pc_no={pc_no} "
-            f"reconnect_interval={reconnect_interval_sec} "
-            f"skip_on_offline={skip_on_offline}", log_file)
+            f"retry_max={retry_max} retry_wait_sec={retry_wait_sec} reconnect_interval_sec={reconnect_interval_sec} "
+            f"not_connectable_action={not_connectable_action}", log_file)
 
         """ 完了フラグ／異常フラグ設定（任意。それぞれ独立にON/OFFできる。ハンドシェイク。
             立てたままにする。相手が確認したら相手側で落とす想定）
@@ -351,27 +366,151 @@ def a_slmp_write_trigger(
         stop_event.set()
         return None
 
-    """ 初期接続 """
+    """ 接続の状態（判定・リトライはこのトリガー。記録・再接続の間隔・通知は ConnectState） """
     plc_client = slmp.SlmpClient(plc_host, plc_port, timeout_sec=plc_timeout,
                                   auto_reconnect=False, network_no=network_no, pc_no=pc_no)
-    is_online  = False
-    try:
-        plc_client.connect()
-        is_online = True
-        base.output_log(MODULE_NAME,
-            f"{TRIGGER_NAME} PLC Connected. {plc_host}:{plc_port}", log_file)
-    except Exception as e:
-        _sig = ErrorIF.report_exception(e, phase="startup", category="comm",  # 初回接続の失敗を報告（A-21）
+    conn_state = ConnectState(TRIGGER_NAME, f"{plc_host}:{plc_port}", reconnect_interval_sec, MODULE_NAME, log_file)
+    connected  = False   # PLC とつながっているか（このトリガーの中の印）
+    fail_count = 0       # 連続失敗の回数（判定に使う。このトリガーの中だけで数える）
+
+    def _drop() -> None:
+        """接続を切る"""
+        nonlocal connected
+        try: plc_client.disconnect()
+        except Exception: pass
+        connected = False
+
+    def _try_connect() -> Optional[BaseException]:
+        """接続を1回試みる。成功なら None、失敗ならその例外"""
+        nonlocal connected
+        try:
+            plc_client.connect()
+            connected = True
+            return None
+        except Exception as e:
+            _drop()
+            return e
+
+    def _reconnect_if_due() -> None:
+        """接続できない間、再接続の間隔が過ぎていれば再接続を試み、結果を ConnectState へ報告する"""
+        nonlocal fail_count
+        if conn_state.should_try_reconnect():
+            e = _try_connect()
+            if e is None:
+                fail_count = 0
+                conn_state.set_connectable()
+            else:
+                conn_state.reconnect_failed(e)
+
+    def _write_error_flag(kind: str) -> None:
+        """error_flag を立てる（有効なときだけ。失敗しても警告だけ）"""
+        try:
+            if error_flag_enabled:
+                _write_flag(error_flag_cfg, error_flag_value)
+                base.output_log(MODULE_NAME,
+                    f"{TRIGGER_NAME} Error Flag Written ({kind}). "
+                    f"{error_flag_cfg}  value={error_flag_value}", log_file)
+        except Exception as e_flag:
+            base.output_log(MODULE_NAME,
+                f"WARNING  Failed to write error flag after {kind} error: "
+                f"{type(e_flag).__name__}: {e_flag}", log_file)
+
+    def _write_once(segment: List[list], seg_id: Any, stats_dict: Optional[Dict[str, Any]]) -> bool:
+        """
+        1セグメントを書き込む。通信の失敗（_COMM_ERRORS）は例外のまま返す（リトライの対象）。
+        通信以外の失敗は記録して error_flag を立て、残りのエントリ・行も続ける。1つでも失敗していれば False
+        """
+        write_error = False
+        if write_mode == "seg":
+            # ---- write_mode = "seg": 1行ずつ書込む ----
+            for row_num, row in enumerate(segment, start=1):
+                for entry in write_map:
+                    src_col = int(entry["src_col"])
+                    dtype   = str(entry.get("dtype", "word"))
+                    try:
+                        raw_val = row[src_col]
+                        if raw_val is None:
+                            continue
+                        _plc_write(plc_client, entry, raw_val, dtype)
+                    except _COMM_ERRORS:
+                        raise
+                    except Exception as e:
+                        base.output_log(MODULE_NAME,
+                            f"Write Error (row={row_num} src_col={src_col}): {e}", log_file)
+                        write_error = True
+                        _write_error_flag("data, entry-level")
+        else:
+            # ---- write_mode = "stat": セグメント統計量を書込む ----
+            for entry in plc_write_map:
+                out_key = entry["out_key"]
+                dtype   = str(entry.get("dtype", "word"))
+                try:
+                    val = stats_dict.get(out_key)
+                    if val is None:
+                        warn = stats_dict.get(f"{out_key}_WARN")
+                        base.output_log(MODULE_NAME,
+                            f"WARNING  No valid value: seg_id={seg_id} "
+                            f"out_key={out_key}  ({warn or 'no value'})  Skip write.", log_file)
+                        continue
+                    _plc_write(plc_client, entry, val, dtype)
+                except _COMM_ERRORS:
+                    raise
+                except Exception as e:
+                    base.output_log(MODULE_NAME,
+                        f"Write Error (out_key={out_key!r}): {e}", log_file)
+                    write_error = True
+                    _write_error_flag("data, entry-level")
+        return not write_error
+
+    def _write_with_retry(segment: List[list], seg_id: Any, stats_dict: Optional[Dict[str, Any]]) -> Optional[bool]:
+        """
+        1セグメントを書き込む。通信に失敗したら retry_wait_sec ごとに接続し直して、最初から書き込み直す（リトライ）。
+        連続 retry_max 回失敗したら not_connectable と判定して ConnectState へ報告し、None を返す
+        （書き込めたら連続失敗の回数を 0 に戻し、_write_once の結果を返す。リトライは画面のみに出し、ConnectState・ErrorIF へは報告しない）
+        """
+        nonlocal fail_count, connected
+        while True:
+            try:
+                if not connected:
+                    plc_client.connect()
+                    connected = True
+                ok = _write_once(segment, seg_id, stats_dict)
+                fail_count = 0
+                return ok
+            except _COMM_ERRORS as e:
+                _drop()
+                fail_count += 1
+                if fail_count >= retry_max:
+                    conn_state.set_not_connectable(e)   # 判定：連続 retry_max 回の失敗
+                    return None
+                if stop_event.is_set():
+                    return None
+                base.output_log(MODULE_NAME,
+                    f"{TRIGGER_NAME} Retry ({fail_count}/{retry_max}). seg_id={seg_id}  "
+                    f"{plc_host}:{plc_port}  ({type(e).__name__}: {e})")
+                _responsive_wait(retry_wait_sec)
+
+    """ 初期接続（retry_wait_sec ごとに retry_max 回まで試みる） """
+    _err: Optional[BaseException] = None
+    for _try in range(1, retry_max + 1):
+        _err = _try_connect()
+        if _err is None:
+            base.output_log(MODULE_NAME,
+                f"{TRIGGER_NAME} PLC Connected. {plc_host}:{plc_port}", log_file)
+            break
+        if _try < retry_max and not stop_event.is_set():
+            base.output_log(MODULE_NAME,       # リトライは画面のみ
+                f"{TRIGGER_NAME} Connect Retry ({_try}/{retry_max}). {plc_host}:{plc_port}  ({type(_err).__name__}: {_err})")
+            _responsive_wait(retry_wait_sec)
+    if _err is not None:
+        _sig = ErrorIF.report_exception(_err, phase="startup", category="comm",  # 初回接続の失敗を報告（A-21）
                                          trigger_id=TRIGGER_NAME, log_file=log_file)
         if _sig == SIGNAL_STOP:
             stop_event.set()
             return None
-        base.output_log(MODULE_NAME,
-            f"{TRIGGER_NAME} Initial Connect FAILED. Go Offline. ({type(e).__name__}: {e})", log_file)
+        conn_state.set_not_connectable(_err, report=False)   # ErrorIF へは上で phase=startup として通知済み
 
-    skipped_seg_count    = 0
-    reconnect_fail_count = 0
-    last_reconnect_try   = 0.0
+    skipped_seg_count = 0
 
     """======== LOOP START ========"""
     base.output_log(MODULE_NAME, f"{TRIGGER_NAME} Start Loop...", log_file)
@@ -382,31 +521,8 @@ def a_slmp_write_trigger(
             segment = post_queue.get(timeout=1.0)
 
         except queue.Empty:
-            """--- オフライン時は再接続を試みる ---"""
-            if not is_online:
-                _now = time.time()
-                if _now - last_reconnect_try >= reconnect_interval_sec:
-                    last_reconnect_try = _now
-                    try:
-                        plc_client.connect()
-                        is_online            = True
-                        reconnect_fail_count = 0
-                        base.output_log(MODULE_NAME,
-                            f"{TRIGGER_NAME} Re-Connected. {plc_host}:{plc_port}", log_file)
-                    except Exception as e:
-                        reconnect_fail_count += 1
-                        ErrorIF.report_event({
-                            "trigger_id": TRIGGER_NAME,
-                            "phase"     : "loop",
-                            "category"  : "comm",
-                            "exc_type"  : type(e).__name__,
-                            "message"   : f"Re-Connect Failed ({reconnect_fail_count} times). {plc_host}:{plc_port}",
-                            "signature" : _SIG_OFFLINE,
-                        })
-                        base.output_log(MODULE_NAME,
-                            f"{TRIGGER_NAME} Re-Connect Failed ({reconnect_fail_count}). "
-                            f"{plc_host}:{plc_port}  ({type(e).__name__}): {e}", log_file)
-
+            """--- 接続できない間は再接続を試みる（間隔は ConnectState） ---"""
+            _reconnect_if_due()
             ErrorIF.emit_summary_if_needed()
 
             if (stop_event.is_set() and
@@ -439,151 +555,38 @@ def a_slmp_write_trigger(
                     f"WARNING  空セグメント。スキップ。 seg_id={seg_id}", log_file)
                 continue
 
-            """オフライン時の処理"""
-            if not is_online:
-                if skip_on_offline:
+            """接続できない間は、再接続の間隔ごとに再接続を試みる（セグメントが途切れず届く間も再接続できるように）"""
+            _reconnect_if_due()
+
+            """接続できない間に届いたセグメントの処理（not_connectable_action）"""
+            if not conn_state.is_connectable():
+                if not_connectable_action == "skip":
                     skipped_seg_count += 1
                     base.output_log(MODULE_NAME,
-                        f"WARNING  OFFLINE - Segment Skipped. "
+                        f"WARNING  NOT CONNECTABLE - Segment Skipped. "
                         f"seg_id={seg_id}  total_skipped={skipped_seg_count}  "
                         f"{plc_host}:{plc_port}", log_file)
                     continue
                 else:
                     base.output_log(MODULE_NAME,
-                        f"{TRIGGER_NAME} OFFLINE - Waiting for reconnect... seg_id={seg_id}", log_file)
-                    while not is_online and not stop_event.is_set():
-                        try:
-                            plc_client.connect()
-                            is_online            = True
-                            reconnect_fail_count = 0
-                            base.output_log(MODULE_NAME,
-                                f"{TRIGGER_NAME} Reconnected. {plc_host}:{plc_port}", log_file)
-                        except Exception as e:
-                            reconnect_fail_count += 1
-                            base.output_log(MODULE_NAME,
-                                f"{TRIGGER_NAME} Re-Connect Failed ({reconnect_fail_count}). "
-                                f"Retry in {reconnect_interval_sec}s...", log_file)
-                            _responsive_wait(reconnect_interval_sec)
+                        f"{TRIGGER_NAME} NOT CONNECTABLE - Waiting for reconnect... seg_id={seg_id}", log_file)
+                    while not conn_state.is_connectable() and not stop_event.is_set():
+                        _reconnect_if_due()
+                        if not conn_state.is_connectable():
+                            _responsive_wait(min(1.0, reconnect_interval_sec))
                     if stop_event.is_set():
                         break
 
-            """==== 書込み実行 ===="""
-            write_error = False
+            """==== 書込み実行（リトライを含む） ===="""
+            stats_dict = calc_stats(stats_ctx, segment, seg_id) if write_mode == "stat" else None
+            result = _write_with_retry(segment, seg_id, stats_dict)
 
-            # ---- write_mode = "seg": 1行ずつ書込む ----
-            if write_mode == "seg":
-                for row_num, row in enumerate(segment, start=1):
-                    for entry in write_map:
-                        src_col = int(entry["src_col"])
-                        dtype   = str(entry.get("dtype", "word"))
-                        try:
-                            raw_val = row[src_col]
-                            if raw_val is None:
-                                continue
-                            _plc_write(plc_client, entry, raw_val, dtype)
-                        except (ConnectionResetError, BrokenPipeError, OSError, RuntimeError) as e:
-                            _sig = ErrorIF.report_exception(
-                                e, phase="loop", category="comm",
-                                trigger_id=TRIGGER_NAME, log_file=log_file)
-                            try:
-                                if error_flag_enabled:
-                                    _write_flag(error_flag_cfg, error_flag_value)
-                                    base.output_log(MODULE_NAME,
-                                        f"{TRIGGER_NAME} Error Flag Written (comm). "
-                                        f"{error_flag_cfg}  value={error_flag_value}", log_file)
-                            except Exception as e_flag:
-                                base.output_log(MODULE_NAME,
-                                    f"WARNING  Failed to write error flag after comm error "
-                                    f"(PLC likely already disconnected): {type(e_flag).__name__}: {e_flag}", log_file)
-                            try: plc_client.disconnect()
-                            except Exception: pass
-                            is_online            = False
-                            reconnect_fail_count = 0
-                            last_reconnect_try   = time.time()
-                            base.output_log(MODULE_NAME,
-                                f"{TRIGGER_NAME} Connection Lost. to Offline. "
-                                f"seg_id={seg_id}  row={row_num}", log_file)
-                            if _sig == SIGNAL_STOP:
-                                stop_event.set()
-                            write_error = True
-                            break
-                        except Exception as e:
-                            base.output_log(MODULE_NAME,
-                                f"Write Error (row={row_num} src_col={src_col}): {e}", log_file)
-                            write_error = True
-                            try:
-                                if error_flag_enabled:
-                                    _write_flag(error_flag_cfg, error_flag_value)
-                                    base.output_log(MODULE_NAME,
-                                        f"{TRIGGER_NAME} Error Flag Written (data, entry-level). "
-                                        f"{error_flag_cfg}  value={error_flag_value}", log_file)
-                            except Exception as e_flag:
-                                base.output_log(MODULE_NAME,
-                                    f"WARNING  Failed to write error flag after entry-level error: "
-                                    f"{type(e_flag).__name__}: {e_flag}", log_file)
-                    # write_error は個別エントリの失敗を記録するだけ（commエラー以外は残りの
-                    # エントリ・行も引き続き試みる。1つでも失敗していれば最終的に error_flag が立つ）
-                    if not is_online:
-                        break  # comm エラーで接続が切れた場合のみ、残りの行の処理を中断する
+            if result is None:
+                base.output_log(MODULE_NAME,
+                    f"WARNING  {TRIGGER_NAME} Segment NOT Written (not connectable). "
+                    f"seg_id={seg_id}  mode={write_mode}", log_file)
 
-            # ---- write_mode = "stat": セグメント統計量を算出して書込む ----
-            else:
-                stats_dict = calc_stats(stats_ctx, segment, seg_id)
-                for entry in plc_write_map:
-                    out_key = entry["out_key"]
-                    dtype   = str(entry.get("dtype", "word"))
-                    try:
-                        val = stats_dict.get(out_key)
-                        if val is None:
-                            warn = stats_dict.get(f"{out_key}_WARN")
-                            base.output_log(MODULE_NAME,
-                                f"WARNING  No valid value: seg_id={seg_id} "
-                                f"out_key={out_key}  ({warn or 'no value'})  Skip write.", log_file)
-                            continue
-                        _plc_write(plc_client, entry, val, dtype)
-                    except (ConnectionResetError, BrokenPipeError, OSError, RuntimeError) as e:
-                        _sig = ErrorIF.report_exception(
-                            e, phase="loop", category="comm",
-                            trigger_id=TRIGGER_NAME, log_file=log_file)
-                        try:
-                            if error_flag_enabled:
-                                _write_flag(error_flag_cfg, error_flag_value)
-                                base.output_log(MODULE_NAME,
-                                    f"{TRIGGER_NAME} Error Flag Written (comm). "
-                                    f"{error_flag_cfg}  value={error_flag_value}", log_file)
-                        except Exception as e_flag:
-                            base.output_log(MODULE_NAME,
-                                f"WARNING  Failed to write error flag after comm error "
-                                f"(PLC likely already disconnected): {type(e_flag).__name__}: {e_flag}", log_file)
-                        try: plc_client.disconnect()
-                        except Exception: pass
-                        is_online            = False
-                        reconnect_fail_count = 0
-                        last_reconnect_try   = time.time()
-                        base.output_log(MODULE_NAME,
-                            f"{TRIGGER_NAME} Connection Lost. to Offline. seg_id={seg_id}", log_file)
-                        if _sig == SIGNAL_STOP:
-                            stop_event.set()
-                        write_error = True
-                        break
-                    except Exception as e:
-                        base.output_log(MODULE_NAME,
-                            f"Write Error (out_key={out_key!r}): {e}", log_file)
-                        write_error = True
-                        try:
-                            if error_flag_enabled:
-                                _write_flag(error_flag_cfg, error_flag_value)
-                                base.output_log(MODULE_NAME,
-                                    f"{TRIGGER_NAME} Error Flag Written (data, entry-level). "
-                                    f"{error_flag_cfg}  value={error_flag_value}", log_file)
-                        except Exception as e_flag:
-                            base.output_log(MODULE_NAME,
-                                f"WARNING  Failed to write error flag after entry-level error: "
-                                f"{type(e_flag).__name__}: {e_flag}", log_file)
-                        # commエラーではないため break しない（残りのエントリも引き続き試みる。
-                        # 1つでも失敗していれば最終的に error_flag が立つ）
-
-            if not write_error:
+            elif result:
                 base.output_log(MODULE_NAME,
                     f"{TRIGGER_NAME} Written. "
                     f"seg_id={seg_id}  rows={len(segment)}  mode={write_mode}", log_file)
@@ -599,16 +602,7 @@ def a_slmp_write_trigger(
         except Exception as e:
             _sig = ErrorIF.report_exception(e, phase="loop", category="data",
                                             trigger_id=TRIGGER_NAME, log_file=log_file)
-            try:
-                if error_flag_enabled:
-                    _write_flag(error_flag_cfg, error_flag_value)
-                    base.output_log(MODULE_NAME,
-                        f"{TRIGGER_NAME} Error Flag Written (data). "
-                        f"{error_flag_cfg}  value={error_flag_value}", log_file)
-            except Exception as e_flag:
-                base.output_log(MODULE_NAME,
-                    f"WARNING  Failed to write error flag after data error: "
-                    f"{type(e_flag).__name__}: {e_flag}", log_file)
+            _write_error_flag("data")
             if _sig == SIGNAL_STOP:
                 stop_event.set()
                 break
@@ -618,14 +612,11 @@ def a_slmp_write_trigger(
             post_queue.task_done()
 
     """======== LOOP END ========"""
-    try:
-        plc_client.disconnect()
-    except Exception:
-        pass
+    _drop()
 
     if skipped_seg_count > 0:
         base.output_log(MODULE_NAME,
-            f"WARNING  {TRIGGER_NAME} Stopped with {skipped_seg_count} segment(s) skipped (OFFLINE).", log_file)
+            f"WARNING  {TRIGGER_NAME} Stopped with {skipped_seg_count} segment(s) skipped (NOT CONNECTABLE).", log_file)
 
     base.output_log(MODULE_NAME, f"{TRIGGER_NAME} Stop.", log_file)
     return None

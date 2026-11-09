@@ -4,8 +4,8 @@
 """
 ########################################
 # Data Load Module [Wine]
-# Ver: 01.d.20261102    By: IWATA, Y.'s Agent AI
-# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
+# Ver: 01.e.20261108    By: IWATA, Y.'s Agent AI
+# Mod: pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string を削除。動作は変えない）
 ########################################
 Wine のデータセットを読み、分析に使えるデータと列定義にする（データロードモジュールの見本）
 
@@ -19,7 +19,6 @@ load_data  # データと列定義を返す。
 MODULE_NAME = "Wine"
 
 """standard library"""
-import os
 import sys
 from pathlib import Path
 
@@ -46,14 +45,14 @@ import tri_s29_util as utl
 ########################################
 def _00_load_raw() -> pd.DataFrame:
     """Load Raw Data"""
-    utl.log(f"Load Raw Data Start.", MODULE_NAME)
+    utl.log("Load Raw Data Start.", MODULE_NAME)
 
     data = load_wine()
     df_raw = pd.DataFrame(data.data, columns=data.feature_names)
     df_raw["quality"] = pd.Series(data.target)
     print(f"df_raw.shape={df_raw.shape}", flush=True)##
 
-    utl.log(f"Load Raw Data End.\n", MODULE_NAME)
+    utl.log("Load Raw Data End.\n", MODULE_NAME)
     return df_raw
 
 
@@ -62,7 +61,7 @@ def _00_load_raw() -> pd.DataFrame:
 ########################################
 def _10_preprocess(df_raw: pd.DataFrame) -> "tuple[pd.DataFrame, dict]":
     """Pre-Processing"""
-    utl.log(f"Pre-Processing Start.", MODULE_NAME)
+    utl.log("Pre-Processing Start.", MODULE_NAME)
     
     df = df_raw.rename(columns={"od280/od315_of_diluted_wines": "od280od315"})
     feature_names = [c for c in df.columns if c != "quality"]
@@ -79,7 +78,7 @@ def _10_preprocess(df_raw: pd.DataFrame) -> "tuple[pd.DataFrame, dict]":
     for k, v in col_def.items():
         print(f"{k} : {v}", flush=True)##
     
-    utl.log(f"Pre-Processing End.\n", MODULE_NAME)
+    utl.log("Pre-Processing End.\n", MODULE_NAME)
     return df, col_def
 
 

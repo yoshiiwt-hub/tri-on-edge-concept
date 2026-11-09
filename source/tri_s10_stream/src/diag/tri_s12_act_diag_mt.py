@@ -4,8 +4,8 @@
 """
 ########################################
 # Act Trigger Module [MT-method Diagnosis]
-# Ver: 02.e.20261104    By: IWATA, Y.'s Agent AI
-# Mod: 公開版に向け、非公開・旧名のモジュールへの言及を整理
+# Ver: 02.f.20261108    By: IWATA, Y.'s Agent AI
+# Mod: pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string、決まり文句の func_qmode などを削除。動作は変えない）
 ########################################
 波形の統計量を MT 法（マハラノビス距離）で評価し、正常な状態からの離れ具合で異常を見つける
 
@@ -30,7 +30,7 @@ import sys
 import threading
 import time
 import traceback
-from   typing   import Any, Dict, List, Tuple, Sequence, Optional
+from   typing   import Any, Dict, List, Tuple, Optional
 
 """external library"""
 ## Not Using
@@ -72,7 +72,6 @@ except ModuleNotFoundError:
         sys.exit(1)
 
 """local module"""
-import src.tri_s01_error_if       as err
 from   src.tri_s01_error_if       import ErrorIF, SIGNAL_STOP
 from   src.tri_s10_stream_wave_stat  import init_stats, calc_stats  # Calc Stats（Act 共通。B-9）
 import src.tri_s19_util        as utl
@@ -275,9 +274,6 @@ def a_mt_diag_trigger(
             seg_id・m_dis・border・異常判定・寄与度最大の変数とその値・使用モデル名・全変数の元の値（{変数名}_val）・全変数の SN 比（{変数名}_snr）
     """
     TRIGGER_NAME = "a_mt_diag_trigger"
-    func_name = sys._getframe().f_code.co_name
-    func_obj = globals().get(func_name)
-    func_qmode = getattr(func_obj, "QMODE", "imq")
 
     try:
         base.output_log(MODULE_NAME, f"{TRIGGER_NAME} Start.", log_file)
@@ -545,6 +541,6 @@ a_mt_diag_trigger.CUT_LAST_ROW = True  # 終点行（変化後）を core が除
 # Entry Point (for Debug)
 ########################################
 if __name__ == "__main__":
-    base.output_log(MODULE_NAME, f"Run Standalone.")
-    base.output_log(MODULE_NAME, f"test show Log")
+    base.output_log(MODULE_NAME, "Run Standalone.")
+    base.output_log(MODULE_NAME, "test show Log")
     base.output_log(MODULE_NAME, f"test save Log  {log_file}", log_file)

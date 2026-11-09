@@ -4,8 +4,8 @@
 """
 ########################################
 # Single Run Test [Act Trigger: Queue Template - Stats]
-# Ver: 01.b.20261103    By: IWATA, Y.'s Agent AI
-# Mod: 設定例のフォルダ名の変更（_settings_exsamples_mod → _settings_exsamples）に合わせた
+# Ver: 01.c.20261108    By: IWATA, Y.'s Agent AI
+# Mod: 一部のテストを別のファイルに移した。準備とトリガーの動かし方（_StatsCase）を、ほかのテストのファイルからも使えるようにした
 ########################################
 a_template_stats_trigger をスレッドで動かし、セグメントを渡して、
 統計量の計算・オンデマンド通知（運用系メトリクス）・起動時の検証を確かめるテスト
@@ -15,12 +15,9 @@ a_template_stats_trigger をスレッドで動かし、セグメントを渡し�
          （judge の判定結果の列も notify_stats で通知できること）
       2. 値が出せなかった統計量は "-" になること
       3. column_register_map / out_coldef の不足、notify_stats の不明な名前で、起動時に停止すること
-      4. 設定例 _settings_exsamples/trigger_setting_02.json__tmpl_queue__(stats).txt の act_trigger が、
-         そのまま動くこと（社内版のみ。設定例のフォルダが無い場合はスキップ）
 
 実行: tri_s10_stream/ で  python -m unittest _test.test_s12_act_tmpl_queue_stats -v
 """
-import json
 import os
 import queue
 import sys
@@ -37,8 +34,6 @@ import src.tri_s00_supervise_base as base
 from   src.tri_s01_error_if import ErrorIF
 
 MODULE = "ACT_Queue"
-EXAMPLE = os.path.join(ROOT, "_settings_exsamples", "trigger_setting_02.json__tmpl_queue__(stats).txt")
-
 # Act に渡る列: 先頭4列 + Find の列（0: f0 / 1: LOT（文字列）/ 2: Sin（数値））
 COL_DEF: Dict[int, Any] = {i: [name, "str", "key", "key", ""] for i, name in enumerate(base.SEG_HEADER_COLS)}
 COL_DEF.update({4: ["f0", "str", "key", "key", ""], 5: ["LOT", "str", "cat", "exp", ""], 6: ["Sin", "float", "num", "obj", ""]})
@@ -57,7 +52,8 @@ def make_segment(seg_id: int, lots: List[str], sins: List[float]) -> List[list]:
             for i, (lot, sin) in enumerate(zip(lots, sins))]
 
 
-class TestTemplateStatsTrigger(unittest.TestCase):
+class _StatsCase:
+    """a_template_stats_trigger のテストの土台（準備と、トリガーの動かし方）。これ自体はテストを持たない"""
 
     def setUp(self) -> None:
         p = mock.patch.object(base, "load_device_info", return_value={"dev_name": "TEST-EQP"})
@@ -78,6 +74,9 @@ class TestTemplateStatsTrigger(unittest.TestCase):
         t.join(timeout=20)
         self.assertFalse(t.is_alive())
         return {"metrics": base.metrics_get_all().get(MODULE, {}), "stopped": stop_event.is_set()}
+
+
+class TestTemplateStatsTrigger(_StatsCase, unittest.TestCase):
 
     def test_stats_are_calculated_and_notified(self):
         before = base.metrics_get_all().get(MODULE, {}).get("total_segments", 0)
@@ -107,17 +106,6 @@ class TestTemplateStatsTrigger(unittest.TestCase):
             with self.subTest(config=config):
                 res = self._run(config, [])
                 self.assertTrue(res["stopped"])
-
-    @unittest.skipUnless(os.path.isfile(EXAMPLE), "設定例のフォルダが無い（公開版）")
-    def test_settings_example_runs_as_is(self):
-        with open(EXAMPLE, encoding="utf-8-sig") as f:
-            act = json.loads(f.read())["act_trigger"]
-        config = {k: v for k, v in act.items() if not k.startswith("##") and k not in ("module", "func")}
-        config["teams_notify"] = False
-        self.assertEqual((act["module"], act["func"]), ("src.tri_s12_act_tmpl_queue", "a_template_stats_trigger"))
-        res = self._run(config, [make_segment(201, ["aaa", "aaa", "bbb"], [1.0, 2.0, 3.0])])
-        self.assertFalse(res["stopped"])
-        self.assertEqual((res["metrics"]["Sin_mean"], res["metrics"]["LOT_mode"]), (2.0, "aaa"))
 
 
 if __name__ == "__main__":

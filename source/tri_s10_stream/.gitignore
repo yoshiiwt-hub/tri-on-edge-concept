@@ -8,6 +8,8 @@
 /src/*
 !/src/tri_s00_supervise_base.py
 !/src/tri_s01_error_if.py
+!/src/tri_s01_connect_state.py
+!/src/tri_s01_storage_queue.py
 !/src/tri_s09_operator.py
 !/src/tri_s10_stream_core.py
 !/src/tri_s10_stream_wave_cutout.py
@@ -87,8 +89,14 @@
 /settings/data/*
 !/settings/data/generate_waveform_sample.csv
 
+!/_env/
+/_env/*
+!/_env/requirements.txt
+
 !/_test/
 /_test/*
+!/_test/test_s01_connect_state.py
+!/_test/test_s01_storage_queue.py
 !/_test/test_s10_stream_driver.py
 !/_test/test_s10_stream_wave.py
 !/_test/test_s10_stream_stat_judge.py

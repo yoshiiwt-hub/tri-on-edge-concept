@@ -4,8 +4,8 @@
 """
 ########################################
 # Find Trigger Module [Text]
-# Ver: 01.p.20261102    By: IWATA, Y.'s Agent AI
-# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
+# Ver: 01.r.20261108    By: IWATA, Y.'s Agent AI
+# Mod: pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string を削除。動作は変えない）
 ########################################
 フォルダに置かれた CSV・TSV 等の区切りテキストを読み、行ごとのデータとして取り込む入口
 
@@ -27,7 +27,7 @@ import sys
 import threading
 import time
 import traceback
-from   typing   import Any, Dict, List, Tuple, Sequence, Optional
+from   typing   import Any, Dict, List, Tuple, Optional
 
 """external library"""
 ## NOT Use
@@ -179,7 +179,7 @@ def f_find_text_trigger(
     [動作の要点]（旧モジュール Docstring から移動）
         tri_s19_util.parse_delimited_text はファイル不存在・全エンコード失敗時にそのまま例外を投げる（util は ErrorIF に依存しないため）。
         このトリガー側で受け止めて ErrorIF.report_exception で報告し、同種エラーが頻発（デフォルト: 60秒に5回）していれば、
-        offline_interval_sec だけ読み取りをスキップし、期間経過後に自動で再開する（オフラインモード）
+        pause_interval_sec だけ読み取りを休み（休止。接続の問題ではないので、接続できない状態とは別に扱う）、期間経過後に自動で再開する
         出力列: col_def の列順に、データ列 + extra_col_def の列が入る（送る値の長さ・順序は col_def と完全に一致させる）
     """
     TRIGGER_NAME = "f_find_text_trigger"
@@ -245,7 +245,7 @@ def f_find_text_trigger(
         
         extra_col_default  = config.get("extra_col_default", "__")
         encodings          = tuple(config.get("encodings", ("utf-8-sig", "cp932", "euc-jp")))
-        offline_interval_sec = config.get("offline_interval_sec", 30)
+        pause_interval_sec = config.get("pause_interval_sec", 30)
 
         """ 読取り対象行の範囲設定（省略可。データ行基準・1始点・両端含む） """
         row_range_raw = config.get("row_range", None)
@@ -309,7 +309,7 @@ def f_find_text_trigger(
             f"{TRIGGER_NAME} monitor_dir={monitor_dir} pfx_sfx={pfx_sfx} interval_sec={interval_sec} "
             f"delimiter={delimiter!r} data_start_row={data_start_row} extra_col_def={extra_col_def} "
             f"extra_col_default={extra_col_default!r} encodings={encodings} "
-            f"offline_interval_sec={offline_interval_sec}", log_file)
+            f"pause_interval_sec={pause_interval_sec}", log_file)
 
         """ SETTING（dtype cast） """
         n_col_def = len(col_def)
@@ -370,19 +370,19 @@ def f_find_text_trigger(
         return False
 
     """======== LOOP START ========"""
-    # is_online: ファイル読み取りが正常に行えているか
-    is_online = True
-    last_retry_try = time.time()
+    # is_paused: 読込みエラーの頻発で、読取りを休んでいるか（休止）
+    is_paused = False
+    pause_start = time.time()
     count = 0
 
     while not stop_event.is_set():
         try:
             """エラー頻発により読み取り休止"""
-            if not is_online:
-                if time.time() - last_retry_try >= offline_interval_sec:
-                    last_retry_try = time.time()
-                    is_online = True
-                    base.output_log(MODULE_NAME, f"{TRIGGER_NAME} Retry Reading. Back to Online.", log_file)
+            if is_paused:
+                if time.time() - pause_start >= pause_interval_sec:
+                    pause_start = time.time()
+                    is_paused = False
+                    base.output_log(MODULE_NAME, f"{TRIGGER_NAME} Pause End. Retry Reading.", log_file)
                 else:
                     time.sleep(interval_sec)
                     continue
@@ -420,12 +420,12 @@ def f_find_text_trigger(
                     # デフォルト: 60秒に5回。error_policy.json に準拠
                     signature = err.make_signature(type(e).__name__, "io", "loop", TRIGGER_NAME)
                     if ErrorIF.is_frequent(signature):
-                        # エラー頻発を検知。オフライン待機に移行
-                        is_online = False
-                        last_retry_try = time.time()
+                        # エラー頻発を検知。読取りを休む（休止）
+                        is_paused = True
+                        pause_start = time.time()
                         base.output_log(
                             MODULE_NAME,
-                            f"{TRIGGER_NAME} Read Errors Frequent. Go Offline for {offline_interval_sec}s.", log_file)
+                            f"{TRIGGER_NAME} Read Errors Frequent. Pause Reading for {pause_interval_sec}s.", log_file)
                         break
 
                     # 単発の読込み失敗。seen_files に登録しないため次回リトライされる

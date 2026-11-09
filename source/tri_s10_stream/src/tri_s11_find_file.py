@@ -4,8 +4,8 @@
 """
 ########################################
 # Find Trigger Module [File]
-# Ver: 07.f.20261102    By: IWATA, Y.'s Agent AI
-# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
+# Ver: 07.g.20261108    By: IWATA, Y.'s Agent AI
+# Mod: pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string を削除。動作は変えない）
 ########################################
 フォルダに置かれたファイルを見つけて、そのファイルの情報を取り込む入口
 
@@ -22,19 +22,15 @@ N_BASE_COL = 13                 # 出力列 0～12（file_path ～ hh）の数�
 EXTRA_SRC_ALLOWED = ("filename", "dirname", "dirpath", "device", "const")  # ファイルを読まないため header は不可
 
 """standard library"""
-import csv
 from   datetime import datetime as dt
-import json
 import os
 import queue
-import random
 import shutil # copy file
-import socket
 import sys
 import threading
 import time
 import traceback
-from   typing   import Any, Dict, List, Tuple, Sequence, Optional
+from   typing   import Any, Dict, List, Tuple, Optional
 
 """external library"""
 ## NOT Use
@@ -76,7 +72,6 @@ except ModuleNotFoundError:
         sys.exit(1)
 
 """local module"""
-import src.tri_s01_error_if       as err
 from   src.tri_s01_error_if       import ErrorIF, SIGNAL_STOP
 import src.tri_s19_util        as utl
 

@@ -4,8 +4,9 @@
 """
 ########################################
 # Find Trigger Module [Agentic Template]
-# Ver: 01.f.20261102    By: IWATA, Y.'s Agent AI
-# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
+# Ver: 01.g.20261106    By: IWATA, Y.'s Agent AI
+# Mod: 接続できない状態の管理を共通の tri_s01_connect_state（ConnectState）に置き換え。通信の失敗は retry_wait_sec ごとに
+#      ソケットだけつなぎ直し（リトライ）、連続 retry_max 回で not_connectable とする。interval_reconn_sec → reconnect_interval_sec
 ########################################
 別プロセスのエージェントから値を受け取って取り込む、Agentic Trigger の Find 側の雛形
 
@@ -13,7 +14,7 @@
 f_agentic_trigger  # エージェントをサブプロセスで起動し、TCP ソケットで値を受け取ってキューに流す。
 
 位置づけ: エージェント側の見本は tri_s19_socket_server_agent。
-設計意図: TriEdge 本体に組み込めない処理（重いライブラリ、32bit / 64bit の混在など）を、別のプロセスに分けて動かせるようにする。通信に失敗したらエージェントを起動し直し、ハートビートでエージェントに生存を知らせて、本体が止まったときにエージェントも止まるようにする。
+設計意図: TriEdge 本体に組み込めない処理（重いライブラリ、32bit / 64bit の混在など）を、別のプロセスに分けて動かせるようにする。通信に失敗したらソケットをつなぎ直し（リトライ）、続けて失敗したら接続できない（not_connectable）として、エージェントを起動し直してから再接続する。ハートビートでエージェントに生存を知らせて、本体が止まったときにエージェントも止まるようにする。接続できない状態の記録・再接続の間隔は tri_s01_connect_state に任せる。
 前提・制約: 作り方は『新規トリガー開発ガイドライン』の「Agentic Trigger の作り方」を参照。
 """
 MODULE_NAME = "FIND_AGENTIC"
@@ -71,6 +72,7 @@ except ModuleNotFoundError:
 
 """local module"""
 from src.tri_s01_error_if import ErrorIF, SIGNAL_STOP
+from src.tri_s01_connect_state import ConnectState
 
 """system dir, file"""
 system_root  = base.get_system_root()
@@ -95,10 +97,12 @@ def f_agentic_trigger(
 
     [動作の要点]（旧モジュール Docstring から移動）
         エージェントとは GET / ACK / NACK で通信する。受信した JSON を col_def の dtype で型変換し、失敗したら NACK を送って送り直してもらう（最大 99 回）
-        通信に失敗したらエージェントを再起動し、オフラインモードから復帰する
+        リトライ: 通信に失敗したら、retry_wait_sec ごとにソケットだけつなぎ直す（エージェントはそのまま。このトリガーの中だけ）
+            連続 retry_max 回失敗したら、接続できない（not_connectable）と判定して ConnectState へ報告する（受け取れたら回数を 0 に戻す）
+        再接続: 接続できない間は reconnect_interval_sec ごとに、エージェントを起動し直してからつなぎ、結果を ConnectState へ報告する
+        接続の状態（ConnectState が登録。FIND_AGENTIC）: connect_state / not_connectable_since / reconnect_fail_count / total_not_connectable
     """
     TRIGGER_NAME = "f_agentic_trigger"
-    _SIG_OFFLINE = f"ConnectionFailed.comm.loop.{TRIGGER_NAME}"
     
     ################################
     # 0. Helper Func
@@ -106,8 +110,12 @@ def f_agentic_trigger(
     def _connect(_ip: str, _port: int, _to: float) -> socket.socket:
         """socket connection"""
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.settimeout(_to)
-        s.connect((_ip, _port))
+        try:
+            s.settimeout(_to)
+            s.connect((_ip, _port))
+        except Exception:
+            s.close()   # つながらなかったソケットは閉じる（リトライのたびに残さない）
+            raise
         return s
 
     def recv_until_delimiter(sock, delimiter, decode, chunk=1024, buf=""):
@@ -163,6 +171,12 @@ def f_agentic_trigger(
                 
             except Exception as e:
                 base.output_log(MODULE_NAME, f"{TRIGGER_NAME} Agent Process Wait Error: {e}", log_file)
+
+    def _responsive_wait(seconds: float) -> None:
+        """stop_event を見ながら細かく待つ"""
+        _wait_end = time.time() + seconds
+        while time.time() < _wait_end and not stop_event.is_set():
+            time.sleep(min(0.05, max(0.0, _wait_end - time.time())))
 
     ################################
     # 1. Config
@@ -256,8 +270,13 @@ def f_agentic_trigger(
         
         connect_timeout_sec   = config.get("connect_timeout_sec", 5)
         server_start_wait_sec = config.get("server_start_wait_sec", 10.0)
-        interval_reconn_sec   = config.get("interval_reconn_sec", 5.0)
+        reconnect_interval_sec = float(config.get("reconnect_interval_sec", 5.0))
+        retry_max              = int(config.get("retry_max", 3))
+        retry_wait_sec         = float(config.get("retry_wait_sec", 1.0))
+        if retry_max < 1 or retry_wait_sec < 0:
+            raise ValueError(f"config['retry_max'] must be >= 1 and config['retry_wait_sec'] >= 0. Got: {retry_max} / {retry_wait_sec}")
         base.output_log(MODULE_NAME, f"{TRIGGER_NAME} server_ip={server_ip} server_port={server_port} connect_timeout_sec={connect_timeout_sec} server_start_wait_sec={server_start_wait_sec} polling_ms={polling_ms}", log_file)
+        base.output_log(MODULE_NAME, f"{TRIGGER_NAME} retry_max={retry_max} retry_wait_sec={retry_wait_sec} reconnect_interval_sec={reconnect_interval_sec}", log_file)
         
         req_msg = config.get("req_msg", "GET")
         encode  = config.get("encode", "utf-8")
@@ -289,25 +308,57 @@ def f_agentic_trigger(
     except Exception as e:
         base.output_log(MODULE_NAME, f"{TRIGGER_NAME} Initial Heartbeat Update Failed: {e}", log_file)
 
-    # Initial Connection
-    is_online  = False
+    # Connection（判定・リトライはこのトリガー。記録・再接続の間隔・通知は ConnectState）
+    conn_state = ConnectState(TRIGGER_NAME, f"{server_ip}:{server_port}", reconnect_interval_sec, MODULE_NAME, log_file)
     tcp_socket = None
-    try:
-        tcp_socket = _connect(
-            server_ip,
-            server_port,
-            connect_timeout_sec
-        )
-        is_online  = True
-        base.output_log(MODULE_NAME, f"{TRIGGER_NAME} Socket Connected. {server_ip}:{server_port}", log_file)
-        
-    except Exception as e:
-        _sig = ErrorIF.report_exception(e, phase="startup", category="comm",  # 初回接続の失敗を報告（A-21）
+    fail_count = 0      # 連続失敗の回数（判定に使う。このトリガーの中だけで数える）
+    _rem       = ""
+
+    def _drop_socket() -> None:
+        """ソケットを閉じる（受信の残りも捨てる）"""
+        nonlocal tcp_socket, _rem
+        if tcp_socket:
+            try: tcp_socket.close()
+            except Exception: pass
+        tcp_socket = None
+        _rem       = ""
+
+    def _on_fail(e: BaseException) -> None:
+        """
+        通信の失敗を数える。連続 retry_max 回で not_connectable と判定して ConnectState へ報告する。
+        それ未満なら retry_wait_sec 待って、次のループでソケットだけつなぎ直す（リトライは画面のみ。ConnectState・ErrorIF へは報告しない）
+        """
+        nonlocal fail_count
+        _drop_socket()
+        fail_count += 1
+        if fail_count >= retry_max:
+            conn_state.set_not_connectable(e)   # 判定：連続 retry_max 回の失敗
+            return
+        base.output_log(MODULE_NAME,
+            f"{TRIGGER_NAME} Retry ({fail_count}/{retry_max}). {server_ip}:{server_port}  ({type(e).__name__}: {e})")
+        _responsive_wait(retry_wait_sec)
+
+    # Initial Connection（retry_wait_sec ごとに retry_max 回まで試みる）
+    _err: Optional[BaseException] = None
+    for _try in range(1, retry_max + 1):
+        try:
+            tcp_socket = _connect(server_ip, server_port, connect_timeout_sec)
+            _err = None
+            base.output_log(MODULE_NAME, f"{TRIGGER_NAME} Socket Connected. {server_ip}:{server_port}", log_file)
+            break
+        except Exception as e:
+            _err = e
+            if _try < retry_max and not stop_event.is_set():
+                base.output_log(MODULE_NAME,       # リトライは画面のみ
+                    f"{TRIGGER_NAME} Connect Retry ({_try}/{retry_max}). {server_ip}:{server_port}  ({type(e).__name__}: {e})")
+                _responsive_wait(retry_wait_sec)
+    if _err is not None:
+        _sig = ErrorIF.report_exception(_err, phase="startup", category="comm",  # 初回接続の失敗を報告（A-21）
                                          trigger_id=TRIGGER_NAME, log_file=log_file)
         if _sig == SIGNAL_STOP:
             stop_event.set()
             return None
-        base.output_log(MODULE_NAME, f"{TRIGGER_NAME} Initial Connect FAILED. Go Offline. ({type(e).__name__}: {e})", log_file)
+        conn_state.set_not_connectable(_err, report=False)   # ErrorIF へは上で phase=startup として通知済み
 
     # Initial Val (Dummy) to Queue
     queue_out.put((0, [None] * len(key_define)))
@@ -316,11 +367,8 @@ def f_agentic_trigger(
     # 4. Main Loop
     ################################
     """======== INIT LOOP ========"""
-    reconnect_fail_count = 0
-    last_restart_time    = 0.0
     last_heartbeat_time  = 0.0
     count = 0
-    _rem  = ""
     """======== MAIN LOOP START ========"""
     try:
         while not stop_event.is_set():
@@ -334,11 +382,9 @@ def f_agentic_trigger(
                 except Exception:
                     pass
                     
-            """==== OFFLINE MODE ===="""
-            if not is_online:
-                if _now - last_restart_time >= interval_reconn_sec:
-                    """Try to Re-Connect"""
-                    last_restart_time = _now
+            """==== NOT CONNECTABLE：再接続の間隔ごとに、エージェントを起動し直してからつなぐ ===="""
+            if not conn_state.is_connectable():
+                if conn_state.should_try_reconnect():
                     # terminate old proc
                     if agent_proc is not None:
                         try:
@@ -360,38 +406,34 @@ def f_agentic_trigger(
                         script_path,
                         agent_env
                     )
-                    time.sleep(server_start_wait_sec)
+                    _responsive_wait(server_start_wait_sec)
 
-                    # re-connect
+                    # re-connect（結果を ConnectState へ報告する）
                     try:
+                        _drop_socket()
                         tcp_socket = _connect(
                             server_ip,
                             server_port,
                             connect_timeout_sec
                         )
-                        is_online = True # connected
-                        reconnect_fail_count = 0
-                        base.output_log(MODULE_NAME, f"{TRIGGER_NAME} Re-Connected. {server_ip}:{server_port}  Back to Online.", log_file)
+                        fail_count = 0
+                        conn_state.set_connectable()
 
                     except Exception as e:
-                        # NOT connected
-                        reconnect_fail_count += 1
-                        ErrorIF.report_event({
-                            "trigger_id": TRIGGER_NAME,
-                            "phase"    : "loop",
-                            "category" : "comm",
-                            "exc_type" : type(e).__name__,
-                            "message"  : f"Re-Connect Failed ({reconnect_fail_count} times). {server_ip}:{server_port}",
-                            "signature": _SIG_OFFLINE,
-                        })
-                        base.output_log(MODULE_NAME, f"{TRIGGER_NAME} Re-Connect Failed ({reconnect_fail_count}). {server_ip}:{server_port}  ({type(e).__name__}): {e}", log_file)
+                        _drop_socket()
+                        conn_state.reconnect_failed(e)
 
-                ErrorIF.emit_summary_if_needed()
-                time.sleep(2)
-                continue
+                if not conn_state.is_connectable():
+                    ErrorIF.emit_summary_if_needed()
+                    _responsive_wait(min(2.0, reconnect_interval_sec))
+                    continue
 
-            """==== ONLINE MODE ===="""
+            """==== CONNECTABLE ===="""
             try:
+                """0. リトライ中は、ここでソケットだけつなぎ直す（失敗は下の except で数える）"""
+                if tcp_socket is None:
+                    tcp_socket = _connect(server_ip, server_port, connect_timeout_sec)
+
                 """1. Socket Send/Receive"""
                 tcp_socket.sendall(
                     ("GET" + sep).encode(encode)
@@ -462,6 +504,7 @@ def f_agentic_trigger(
                 sys.stdout.flush()##
                 
                 count += 1
+                fail_count = 0   # 受け取れたら連続失敗の回数を 0 に戻す
                 time.sleep(polling_sec)
                 
                 #### TBD / ####
@@ -493,27 +536,8 @@ def f_agentic_trigger(
                 continue
 
             except Exception as e:
-                """Conn Error to OFFLINE MODE"""
-                _sig = ErrorIF.report_exception(
-                    e,
-                    phase="loop",
-                    category="comm",
-                    trigger_id=TRIGGER_NAME,
-                    log_file=log_file
-                )
-                if tcp_socket:
-                    try: tcp_socket.close()
-                    except Exception: pass
-                tcp_socket = None
-                _rem  = ""
-                is_online = False
-                last_restart_time = 0.0
-                base.output_log(MODULE_NAME, f"{TRIGGER_NAME} Connection Lost. to Offline. {server_ip}:{server_port}", log_file)
-
-                if _sig == SIGNAL_STOP:
-                    stop_event.set()
-                    break
-
+                """通信の失敗：ソケットを閉じて数える（連続 retry_max 回で not_connectable）"""
+                _on_fail(e)
                 continue
     
     except Exception as e:
@@ -532,9 +556,7 @@ def f_agentic_trigger(
         """Stop Agent"""
         base.output_log(MODULE_NAME, f"{TRIGGER_NAME} Shutdown. Creating Stop File.", log_file)
         _stop_agent_if_exists(agent_proc, agent_stop_file_path)
-        if tcp_socket:
-            try: tcp_socket.close()
-            except Exception: pass
+        _drop_socket()
         try: trigger_hb_path.unlink(missing_ok=True)
         except Exception: pass
 

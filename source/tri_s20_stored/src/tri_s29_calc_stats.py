@@ -4,8 +4,8 @@
 """
 ########################################
 # Segment Stats Calculation Functions（20_stored 用ポータブル版）
-# Ver: 01.c.20261104    By: IWATA, Y.'s Agent AI
-# Mod: 公開版に向け、非公開・旧名のモジュールへの言及を整理
+# Ver: 01.d.20261108    By: IWATA, Y.'s Agent AI
+# Mod: pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string を削除。動作は変えない）
 ########################################
 セグメントから統計量を求める計算を、Stream と同じ定義で Stored 側でも使えるようにする
 
@@ -22,7 +22,7 @@ MODULE_NAME = "Calc_Seg_Stats"
 
 """standard library"""
 from   datetime import datetime as dt
-from   typing   import Any, Dict, List, Tuple, Sequence, Optional
+from   typing   import Any, Dict, List, Tuple, Optional
 
 
 def _log(msg: str) -> None:

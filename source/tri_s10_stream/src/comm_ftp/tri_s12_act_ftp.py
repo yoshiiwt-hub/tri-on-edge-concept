@@ -4,8 +4,8 @@
 """
 ########################################
 # Act Trigger Module [FTP Client]
-# Ver: 02.d.20261104    By: IWATA, Y.'s Agent AI
-# Mod: 公開版に向け、非公開・旧名のモジュールへの言及を整理
+# Ver: 02.f.20261108    By: IWATA, Y.'s Agent AI
+# Mod: pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string を削除。動作は変えない）
 ########################################
 Find が見つけたファイルを、上位側の FTP サーバーへ送り届ける出口
 
@@ -13,7 +13,7 @@ Find が見つけたファイルを、上位側の FTP サーバーへ送り届�
 a_send_ftp_trigger  # セグメントの file_path 列のファイルを FTP サーバーへ送信し、送った後のファイルを後処理する。
 
 位置づけ: 送り先が FTP サーバーしか受け付けない場合に使う。後処理・異常の報告は tri_s12_act_smb と同じ考え方。
-設計意図: 一時名で送ってから正式名にリネームする方式（atomic）を選べるようにし、受け手が送信途中のファイルを読まないようにする。送った後のファイルを残す場合は、送信済みを SQLite に記録して二重に送らない。
+設計意図: 一時名で送ってから正式名にリネームする方式（atomic）を選べるようにし、受け手が送信途中のファイルを読まないようにする。送った後のファイルを残す場合は、送信済みを SQLite に記録して二重に送らない。サーバに届かなければ、つなぎ直して送り直し（リトライ）、続けて失敗したら接続できない（not_connectable）とする。接続できない状態の記録・再接続の間隔は tri_s01_connect_state に任せる。
 前提・制約: 接続情報は環境変数（FTP_SEND_HOST / FTP_SEND_PORT / FTP_SEND_USER / FTP_SEND_PASS）で渡す（Find の FTP サーバー用とは別）。絶対パスのファイルのみ扱う。
 """
 MODULE_NAME = "ACT_FTP"
@@ -28,7 +28,7 @@ import sys
 import threading
 import time
 import traceback
-from   typing   import Any, Dict, List, Tuple, Optional
+from   typing   import Any, Dict, Tuple, Optional
 
 """external library"""
 ## NOT Use
@@ -72,6 +72,7 @@ except ModuleNotFoundError:
 
 """local module"""
 from   src.tri_s01_error_if import ErrorIF, SIGNAL_STOP
+from   src.tri_s01_connect_state import ConnectState
 import src.tri_s19_util  as utl
 
 """system dir, file"""
@@ -167,7 +168,14 @@ def a_send_ftp_trigger(
         相対パス・フォルダは処理せず、異常としてログに残す
         remote_dir が無ければ上の階層から順に作成する（"/" 始まりは絶対パス、それ以外はログイン直後のフォルダから）
         atomic=true の場合は <名前>.temp で送信してからリネーム（失敗時は .temp を削除）
-        接続は最初の送信時に行い、以後は使い回す（切断時は次の送信時に再接続）
+        接続は起動時に行い、以後は使い回す（送信のたびに NOOP で確かめ、切れていればつなぎ直す）
+        接続の扱い:
+            送信に失敗したら、サーバに届くか（接続・NOOP）を確かめる。届かなければ接続の失敗として
+            retry_wait_sec ごとにつなぎ直して送り直し、連続 retry_max 回で not_connectable とする。
+            届くならファイル側の失敗（権限・パス等）として、今までどおりそのファイルだけ異常として記録する
+            接続できない間は reconnect_interval_sec ごとに再接続を試みる。届いたファイルは not_connectable_action に従う
+            （"wait" = 再接続できるまで待つ（既定）/ "skip" = 送らない。後処理もしないので、ファイルは元の場所に残る）
+            接続の状態（ConnectState が登録。ACT_FTP）: connect_state / not_connectable_since / reconnect_fail_count / total_not_connectable
         運用系メトリクス: last_ok_file / total_ok_files / last_ng_file / total_ng_files（正常は画面表示のみ、異常はログファイルにも残す）
     """
     TRIGGER_NAME = "a_send_ftp_trigger"
@@ -196,6 +204,14 @@ def a_send_ftp_trigger(
         overwrite   = bool(config.get("overwrite", True))
         passive     = bool(config.get("passive", True))
         timeout_sec = float(config.get("timeout_sec", 30))
+        retry_max              = int(config.get("retry_max", 3))
+        retry_wait_sec         = float(config.get("retry_wait_sec", 5.0))
+        reconnect_interval_sec = float(config.get("reconnect_interval_sec", 10.0))
+        if retry_max < 1 or retry_wait_sec < 0:
+            raise ValueError(f"config['retry_max'] must be >= 1 and config['retry_wait_sec'] >= 0. Got: {retry_max} / {retry_wait_sec}")
+        not_connectable_action = str(config.get("not_connectable_action", "wait")).strip().lower()
+        if not_connectable_action not in ("skip", "wait"):
+            raise ValueError(f"config['not_connectable_action'] must be 'skip' / 'wait'. Got: {not_connectable_action!r}")
 
         # ---- アップロード後の処理 ----
         after_upload = config.get("after_upload", "keep")
@@ -229,6 +245,9 @@ def a_send_ftp_trigger(
             f"atomic={atomic} overwrite={overwrite} passive={passive} timeout_sec={timeout_sec} "
             f"file_path_col={file_path_col} stable_check_n={stable_check_n} "
             f"after_upload={after_upload} move_to={move_to} rename_pfx_sfx={[rename_pfx, rename_sfx]}", log_file)
+        base.output_log(MODULE_NAME,
+            f"{TRIGGER_NAME} retry_max={retry_max} retry_wait_sec={retry_wait_sec} "
+            f"reconnect_interval_sec={reconnect_interval_sec} not_connectable_action={not_connectable_action}", log_file)
 
         # 運用系メトリクスの初期値登録
         base.metrics_add(MODULE_NAME, "total_ok_files", 0)
@@ -283,6 +302,98 @@ def a_send_ftp_trigger(
         ftp = _ftp
         return ftp
 
+    """======== 接続の状態（判定・リトライはこのトリガー。記録・再接続の間隔・通知は ConnectState） ========"""
+    ftp_target = f"{ftp_host}:{ftp_port}"
+    conn_state = ConnectState(TRIGGER_NAME, ftp_target, reconnect_interval_sec, MODULE_NAME, log_file)
+    fail_count = 0      # 連続失敗の回数（判定に使う。このトリガーの中だけで数える）
+
+    def _wait(seconds: float) -> None:
+        """stop_event を見ながら細かく待つ"""
+        _end = time.time() + seconds
+        while time.time() < _end and not stop_event.is_set():
+            time.sleep(min(0.05, max(0.0, _end - time.time())))
+
+    def _try_connect() -> Optional[BaseException]:
+        """サーバに届くかを確かめる（つながっていれば NOOP、切れていればつなぎ直す）。成功なら None、失敗ならその例外"""
+        try:
+            _get_ftp()
+            return None
+        except Exception as e:
+            _close_ftp()
+            return e
+
+    def _count_fail(e: BaseException, what: str) -> bool:
+        """
+        接続の失敗を1回数える。連続 retry_max 回で not_connectable と判定して ConnectState へ報告し、False を返す
+        （続けるなら retry_wait_sec 待って True。リトライは画面のみに出し、ConnectState・ErrorIF へは報告しない）
+        """
+        nonlocal fail_count
+        fail_count += 1
+        if fail_count >= retry_max:
+            conn_state.set_not_connectable(e)   # 判定：連続 retry_max 回の失敗
+            return False
+        if stop_event.is_set():
+            return False
+        base.output_log(MODULE_NAME,
+            f"{TRIGGER_NAME} Retry ({fail_count}/{retry_max}). {what}  {ftp_target}  ({type(e).__name__}: {e})")
+        _wait(retry_wait_sec)
+        return True
+
+    def _upload_with_retry(local_path: str, what: str) -> Tuple[bool, Any]:
+        """
+        アップロードする。失敗したらサーバに届くかを確かめ、届かなければ接続の失敗として retry_wait_sec ごとに
+        つなぎ直して送り直す（リトライ）。届くならファイル側の失敗として、例外のまま返す。
+        Returns: (実行できたか（not_connectable になったら False）, _upload_to_ftp の戻り値)
+        """
+        nonlocal fail_count
+        while True:
+            try:
+                ftp_ = _get_ftp()
+            except Exception as e:
+                _close_ftp()
+                if not _count_fail(e, what):
+                    return False, None
+                continue
+            try:
+                r = _upload_to_ftp(ftp_, local_path, atomic, overwrite)
+                fail_count = 0
+                return True, r
+            except Exception as ex:
+                _close_ftp()   # 状態が不明なため、接続し直してから確かめる
+                if _try_connect() is None:
+                    raise
+                if not _count_fail(ex, what):
+                    return False, None
+
+    def _reconnect_if_due() -> None:
+        """接続できない間、再接続の間隔が過ぎていれば再接続を試み、結果を ConnectState へ報告する"""
+        nonlocal fail_count
+        if conn_state.should_try_reconnect():
+            e = _try_connect()
+            if e is None:
+                fail_count = 0
+                conn_state.set_connectable()
+            else:
+                conn_state.reconnect_failed(e)
+
+    def _ready(seg_id: Any) -> bool:
+        """
+        送る前に、接続できる状態かを確かめる（接続できない間は再接続を試みる）。
+        接続できなければ not_connectable_action に従う: "wait" = 再接続できるまで待つ / "skip" = 送らない（False）
+        """
+        _reconnect_if_due()
+        if conn_state.is_connectable():
+            return True
+        if not_connectable_action == "skip":
+            return False
+        base.output_log(MODULE_NAME,
+            f"{TRIGGER_NAME} NOT CONNECTABLE - Waiting for reconnect... seg_id={seg_id}  {ftp_target}", log_file)
+        while not conn_state.is_connectable() and not stop_event.is_set():
+            _reconnect_if_due()
+            if not conn_state.is_connectable():
+                _wait(min(1.0, reconnect_interval_sec))
+        return conn_state.is_connectable()
+
     def _report_ok(file_name: str, msg: str) -> None:
         """正常：画面表示のみ（ログファイルには書かない）＋メトリクス"""
         base.output_log(MODULE_NAME, msg)
@@ -324,10 +435,15 @@ def a_send_ftp_trigger(
             _report_ng(file_name, f"File NOT Stable, skip. seg_id={seg_id}  {local_path}")
             return False
 
-        # 送信
+        # 送信（サーバに届かないときはリトライ）。接続できない間は not_connectable_action に従う
+        #   "wait": 再接続できるまで待って、このファイルを送り直す / "skip": 送らず、後処理もしない（ファイルは元の場所に残る）
         try:
             mtime = os.path.getmtime(local_path)
-            uploaded, remote_name = _upload_to_ftp(_get_ftp(), local_path, atomic, overwrite)
+            done, res = False, None
+            while not done and _ready(seg_id):
+                done, res = _upload_with_retry(local_path, f"seg_id={seg_id}  {file_name}")
+                if not done and (not_connectable_action == "skip" or stop_event.is_set()):
+                    break
         except Exception as e_up:
             _close_ftp()  # 状態が不明なため、次の送信時に接続し直す
             _report_ng(file_name, f"Upload Error: seg_id={seg_id}  {local_path}  {e_up}")
@@ -336,6 +452,10 @@ def a_send_ftp_trigger(
                 trigger_id=TRIGGER_NAME, log_file=log_file)
             return _sig == SIGNAL_STOP
 
+        if not done:
+            _report_ng(file_name, f"NOT CONNECTABLE - NOT Uploaded: seg_id={seg_id}  {local_path}")
+            return False
+        uploaded, remote_name = res
         if not uploaded:
             base.output_log(MODULE_NAME, f"Remote File Exists, skip (overwrite=false). seg_id={seg_id}  {remote_dir}/{remote_name}", log_file)
             return False
@@ -356,6 +476,24 @@ def a_send_ftp_trigger(
             _report_ng(file_name, f"After Upload Error ({after_upload}): seg_id={seg_id}  {local_path}  {e_after}")
         return False
 
+    """======== 初回接続（retry_wait_sec ごとに retry_max 回まで試みる。つながらなくても止めない） ========"""
+    _err: Optional[BaseException] = None
+    for _try in range(1, retry_max + 1):
+        _err = _try_connect()
+        if _err is None:
+            break
+        if _try < retry_max and not stop_event.is_set():
+            base.output_log(MODULE_NAME,       # リトライは画面のみ
+                f"{TRIGGER_NAME} Connect Retry ({_try}/{retry_max}). {ftp_target}  ({type(_err).__name__}: {_err})")
+            _wait(retry_wait_sec)
+    if _err is not None:
+        _sig = ErrorIF.report_exception(_err, phase="startup", category="comm",  # 初回接続の失敗を報告（A-21）
+                                         trigger_id=TRIGGER_NAME, log_file=log_file)
+        if _sig == SIGNAL_STOP:
+            stop_event.set()
+            return None
+        conn_state.set_not_connectable(_err, report=False)   # ErrorIF へは上で phase=startup として通知済み
+
     """======== LOOP START ========"""
     base.output_log(MODULE_NAME, f"{TRIGGER_NAME} Start Loop...", log_file)
     while True:
@@ -368,6 +506,7 @@ def a_send_ftp_trigger(
                     post_queue.qsize() == 0 and
                     getattr(post_queue, "unfinished_tasks", 0) == 0):
                 break
+            _reconnect_if_due()   # 接続できない間は再接続を試みる（間隔は ConnectState）
             continue
 
         """sentinel → 終了"""

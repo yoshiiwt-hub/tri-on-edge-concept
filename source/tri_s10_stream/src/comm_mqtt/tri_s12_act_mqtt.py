@@ -4,8 +4,8 @@
 """
 ########################################
 # Act Trigger Module [MQTT Publish]
-# Ver: 02.c.20261102    By: IWATA, Y.'s Agent AI
-# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
+# Ver: 02.e.20261108    By: IWATA, Y.'s Agent AI
+# Mod: pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string を削除。動作は変えない）
 ########################################
 セグメントの値や統計量を、MQTT のトピックへ送り出す出口
 
@@ -15,7 +15,7 @@ a_mqtt_pub_stats_trigger  # セグメントの統計量を求め、1件の JSON 
 _run_pub_trigger          # 2つの trigger の共通ループ（送る内容だけが異なる）。
 
 位置づけ: 生データを送る場合は seg、統計量だけを送る場合は stats を使う。通信の部品は tri_s19_mqtt、統計量の算出は tri_s10_stream_wave_stat を使う。受け側は tri_s11_find_mqtt で受け取れる。
-設計意図: セグメント全体を1メッセージにまとめて送る形（publish_mode="segment"）を用意し、短時間に大量の Publish をするとメッセージが欠落しやすいブローカーでも安全に送れるようにする。まとめて送る場合は終端の行を付け、受け側がすぐにセグメントの終わりを判定できるようにする。
+設計意図: セグメント全体を1メッセージにまとめて送る形（publish_mode="segment"）を用意し、短時間に大量の Publish をするとメッセージが欠落しやすいブローカーでも安全に送れるようにする。まとめて送る場合は終端の行を付け、受け側がすぐにセグメントの終わりを判定できるようにする。接続・Publish に失敗したら、その場で接続し直して送り直し（リトライ）、続けて失敗したら接続できない（not_connectable）とする。接続できない状態の記録・再接続の間隔は tri_s01_connect_state に任せる。
 前提・制約: 外部のブローカーが無い場合は、組込みブローカーを起動して使える。
 """
 MODULE_NAME = "ACT_MQTT"
@@ -72,8 +72,8 @@ except ModuleNotFoundError:
         sys.exit(1)
 
 """local module"""
-import src.tri_s01_error_if as err
 from   src.tri_s01_error_if import ErrorIF, SIGNAL_STOP
+from   src.tri_s01_connect_state import ConnectState
 from   src.tri_s10_stream_wave_stat import init_stats, calc_stats, export_out_coldef  # Calc Stats（Act 共通。B-9）
 import src.comm_mqtt.tri_s19_mqtt as mqtt_util
 
@@ -103,9 +103,20 @@ def _run_pub_trigger(
     config    : Dict[str, Any],
     stop_event: threading.Event,
 ) -> None:
-    """MQTT ブローカーへセグメントを Publish する共通ループ。mode で送信内容だけが変わる"""
+    """MQTT ブローカーへセグメントを Publish する共通ループ。mode で送信内容だけが変わる
+
+    [動作の要点]
+        リトライ: 接続（CONNACK が来ない・拒否）・Publish に失敗したら、retry_wait_sec ごとに接続し直して（CONNACK を待つ）、
+            送れなかったメッセージから送り直す（このトリガーの中だけ）
+            連続 retry_max 回失敗したら、接続できない（not_connectable）と判定して ConnectState へ報告する（送れたら回数を 0 に戻す）
+            キューが空の間に切断を検知したときも、同じように接続し直す
+        切断の検知: paho のコールバックはトリガー内の印（link_up）だけを変え、ConnectState への報告はトリガーのスレッドから行う
+        再接続: 接続できない間は reconnect_interval_sec ごとに試み、結果を ConnectState へ報告する
+        接続できない間に届いたセグメント: not_connectable_action = "skip"（送らずにスキップ）/ "wait"（再接続できるまで待つ）
+        接続の状態（ConnectState が登録。ACT_MQTT）: connect_state / not_connectable_since / reconnect_fail_count / total_not_connectable
+    """
     TRIGGER_NAME = "a_mqtt_pub_seg_trigger" if mode == "seg" else "a_mqtt_pub_stats_trigger"
-    _SIG_OFFLINE = f"ConnectionFailed.comm.loop.{TRIGGER_NAME}"
+    CONNACK_TIMEOUT_SEC = 10.0   # CONNACK を待つ時間
 
     """======== STARTUP ========"""
     try:
@@ -134,7 +145,13 @@ def _run_pub_trigger(
         password      = config.get("password")
         keepalive     = int(config.get("keepalive", 60))
         reconnect_interval_sec = float(config.get("reconnect_interval_sec", 10.0))
-        skip_on_offline = bool(config.get("skip_on_offline", True))
+        retry_max              = int(config.get("retry_max", 3))
+        retry_wait_sec         = float(config.get("retry_wait_sec", 1.0))
+        not_connectable_action = str(config.get("not_connectable_action", "skip")).strip().lower()
+        if retry_max < 1 or retry_wait_sec < 0:
+            raise ValueError(f"config['retry_max'] must be >= 1 and config['retry_wait_sec'] >= 0. Got: {retry_max} / {retry_wait_sec}")
+        if not_connectable_action not in ("skip", "wait"):
+            raise ValueError(f"config['not_connectable_action'] must be 'skip' / 'wait'. Got: {not_connectable_action!r}")
 
         if broker_mode not in ("external", "embedded"):
             raise ValueError(
@@ -186,7 +203,8 @@ def _run_pub_trigger(
             f"broker_mode={broker_mode}  broker_host={broker_host}  broker_port={broker_port}  "
             f"publish_topic={publish_topic}  qos={qos}  retain={retain}  "
             f"publish_mode={publish_mode}  marker_row_enable={marker_row_enable}  "
-            f"skip_on_offline={skip_on_offline}  reconnect_interval_sec={reconnect_interval_sec}", log_file)
+            f"retry_max={retry_max}  retry_wait_sec={retry_wait_sec}  reconnect_interval_sec={reconnect_interval_sec}  "
+            f"not_connectable_action={not_connectable_action}", log_file)
 
     except Exception as e:
         ErrorIF.report_exception(e, phase="startup", category="config",
@@ -194,25 +212,27 @@ def _run_pub_trigger(
         stop_event.set()
         return None
 
-    """======== 共有オンライン状態 ========"""
-    is_online     = False
+    """======== 接続の印（paho のコールバックが変える。ConnectState への報告はトリガーのスレッドから） ========"""
+    link_up       = False   # CONNACK（rc=0）を受けて True、切断で False
     connack_event = threading.Event()
 
     """======== HELPER ========"""
 
     def _on_connect(client, userdata, flags, rc):
-        nonlocal is_online
+        nonlocal link_up
         if rc == 0:
-            is_online = True
+            link_up = True
             connack_event.set()
             base.output_log(MODULE_NAME,
                 f"{TRIGGER_NAME} Connected to broker. {broker_host}:{broker_port}", log_file)
         else:
             connack_event.set()
             base.output_log(MODULE_NAME,
-                f"{TRIGGER_NAME} Connect failed. rc={rc}", log_file)
+                f"{TRIGGER_NAME} Connect failed. rc={rc}")   # 失敗の記録は判定側（ConnectState / ErrorIF）に任せ、ここは画面のみ
 
     def _on_disconnect(client, userdata, rc):
+        nonlocal link_up
+        link_up = False
         if rc != 0:
             base.output_log(MODULE_NAME,
                 f"{TRIGGER_NAME} Unexpected disconnect. rc={rc}", log_file)
@@ -252,34 +272,119 @@ def _run_pub_trigger(
         else:
             time.sleep(2.0)
 
-    """======== 初期接続 ========"""
+    """======== 接続ヘルパー ========"""
     mqtt_client: Optional[mqtt.Client] = None
-    _init_conn_err: Optional[Exception] = None
-    try:
-        mqtt_client = _build_client()
-        connack_event.clear()
-        mqtt_client.connect(broker_host, broker_port, keepalive)
-        mqtt_client.loop_start()
-        if not connack_event.wait(timeout=10.0):
-            base.output_log(MODULE_NAME,
-                f"{TRIGGER_NAME} Initial Connect CONNACK Timeout. Go Offline.", log_file)
-            mqtt_util.teardown_client(mqtt_client)
-            mqtt_client = None
-            is_online = False
-            _init_conn_err = TimeoutError(f"Initial Connect CONNACK Timeout. {broker_host}:{broker_port}")
-        elif not is_online:
-            base.output_log(MODULE_NAME,
-                f"{TRIGGER_NAME} Initial Connect REFUSED (rc!=0). Go Offline.", log_file)
-            mqtt_util.teardown_client(mqtt_client)
-            mqtt_client = None
-            _init_conn_err = ConnectionRefusedError(f"Initial Connect REFUSED (rc!=0). {broker_host}:{broker_port}")
-    except Exception as e:
-        base.output_log(MODULE_NAME,
-            f"{TRIGGER_NAME} Initial Connect FAILED. "
-            f"({type(e).__name__}: {e})  Go Offline.", log_file)
+    fail_count = 0   # 連続失敗の回数（判定に使う。このトリガーの中だけで数える）
+
+    # 接続の状態（判定・リトライはこのトリガー。記録・再接続の間隔・通知は ConnectState）
+    conn_state = ConnectState(TRIGGER_NAME, f"{broker_host}:{broker_port}", reconnect_interval_sec, MODULE_NAME, log_file)
+
+    def _drop_client() -> None:
+        """クライアントを止めて切断する"""
+        nonlocal mqtt_client, link_up
         mqtt_util.teardown_client(mqtt_client)
         mqtt_client = None
-        _init_conn_err = e
+        link_up     = False
+
+    def _try_connect() -> Optional[BaseException]:
+        """接続を1回試みる（CONNACK を待つ）。成功なら None、失敗ならその例外"""
+        nonlocal mqtt_client
+        _drop_client()
+        try:
+            mqtt_client = _build_client()
+            connack_event.clear()
+            mqtt_client.connect(broker_host, broker_port, keepalive)
+            mqtt_client.loop_start()
+            if not connack_event.wait(timeout=CONNACK_TIMEOUT_SEC):
+                raise TimeoutError(f"CONNACK Timeout. {broker_host}:{broker_port}")
+            if not link_up:
+                raise ConnectionRefusedError(f"Connect REFUSED (rc!=0). {broker_host}:{broker_port}")
+            return None
+        except Exception as e:
+            _drop_client()
+            return e
+
+    def _count_fail(e: BaseException, what: str) -> bool:
+        """
+        失敗を1回数える。連続 retry_max 回に達したら not_connectable と判定して ConnectState へ報告し、False を返す
+        （リトライを続けるなら retry_wait_sec 待って True を返す。リトライは画面のみに出し、ConnectState・ErrorIF へは報告しない）
+        """
+        nonlocal fail_count
+        fail_count += 1
+        if fail_count >= retry_max:
+            conn_state.set_not_connectable(e)   # 判定：連続 retry_max 回の失敗
+            return False
+        if stop_event.is_set():
+            return False
+        base.output_log(MODULE_NAME,
+            f"{TRIGGER_NAME} Retry ({fail_count}/{retry_max}). {what}  "
+            f"{broker_host}:{broker_port}  ({type(e).__name__}: {e})")
+        _responsive_wait(retry_wait_sec)
+        return True
+
+    def _publish_with_retry(payloads: List[bytes], seg_id: Any) -> bool:
+        """
+        メッセージを順に Publish する。接続・Publish に失敗したら retry_wait_sec ごとに接続し直して、
+        送れなかったメッセージから送り直す（リトライ）。送れたら True、not_connectable になったら False
+        """
+        nonlocal fail_count
+        done = 0
+        while True:
+            e = _try_connect() if (mqtt_client is None or not link_up) else None
+            if e is None:
+                try:
+                    while done < len(payloads):
+                        result = mqtt_client.publish(publish_topic, payloads[done], qos=qos, retain=retain)
+                        if result.rc != 0:
+                            raise OSError(
+                                f"publish() failed. rc={result.rc}  seg_id={seg_id}  message={done + 1}/{len(payloads)}")
+                        done += 1
+                    fail_count = 0
+                    return True
+                except Exception as ex:
+                    e = ex
+                    _drop_client()
+            if not _count_fail(e, f"seg_id={seg_id}  sent={done}/{len(payloads)}"):
+                return False
+
+    def _recover_link() -> None:
+        """接続できる状態で切断を検知したら（キューが空の間）、retry_wait_sec ごとに接続し直す"""
+        nonlocal fail_count
+        while conn_state.is_connectable() and (mqtt_client is None or not link_up):
+            e = _try_connect()
+            if e is None:
+                fail_count = 0
+                return
+            if not _count_fail(e, "Link Lost."):
+                return
+
+    def _reconnect_now() -> bool:
+        """再接続を1回試み、結果を ConnectState へ報告する。成功なら True"""
+        nonlocal fail_count
+        e = _try_connect()
+        if e is None:
+            fail_count = 0
+            conn_state.set_connectable()
+            return True
+        conn_state.reconnect_failed(e)
+        return False
+
+    def _reconnect_if_due() -> None:
+        """接続できない間、再接続の間隔が過ぎていれば再接続を試みる"""
+        if conn_state.should_try_reconnect():
+            _reconnect_now()
+
+    """======== 初期接続（retry_wait_sec ごとに retry_max 回まで試みる） ========"""
+    _init_conn_err: Optional[BaseException] = None
+    for _try in range(1, retry_max + 1):
+        _init_conn_err = _try_connect()
+        if _init_conn_err is None:
+            break
+        if _try < retry_max and not stop_event.is_set():
+            base.output_log(MODULE_NAME,       # リトライは画面のみ
+                f"{TRIGGER_NAME} Connect Retry ({_try}/{retry_max}). {broker_host}:{broker_port}  "
+                f"({type(_init_conn_err).__name__}: {_init_conn_err})")
+            _responsive_wait(retry_wait_sec)
 
     """初回接続の失敗を報告（タイムアウト・拒否・例外のいずれも。A-21）"""
     if _init_conn_err is not None:
@@ -288,12 +393,10 @@ def _run_pub_trigger(
         if _sig == SIGNAL_STOP:
             stop_event.set()
             return None
-        is_online = False
+        conn_state.set_not_connectable(_init_conn_err, report=False)   # ErrorIF へは上で phase=startup として通知済み
 
     """======== LOOP START ========"""
-    reconnect_fail_count = 0
-    last_reconnect_try   = time.time()
-    skipped_seg_count    = 0
+    skipped_seg_count = 0
 
     while True:
 
@@ -302,40 +405,9 @@ def _run_pub_trigger(
             segment = post_queue.get(timeout=1.0)
 
         except queue.Empty:
-            # オフライン中は再接続を試みる
-            if not is_online and (time.time() - last_reconnect_try) >= reconnect_interval_sec:
-                last_reconnect_try = time.time()
-                try:
-                    mqtt_util.teardown_client(mqtt_client)
-                    mqtt_client = None
-                    mqtt_client = _build_client()
-                    connack_event.clear()
-                    mqtt_client.connect(broker_host, broker_port, keepalive)
-                    mqtt_client.loop_start()
-                    if not (connack_event.wait(timeout=10.0) and is_online):
-                        raise ConnectionError("CONNACK not received or connection refused")
-                    reconnect_fail_count = 0
-                    base.output_log(MODULE_NAME,
-                        f"{TRIGGER_NAME} Reconnected. {broker_host}:{broker_port}", log_file)
-                except Exception as e:
-                    reconnect_fail_count += 1
-                    mqtt_util.teardown_client(mqtt_client)
-                    mqtt_client = None
-                    is_online = False
-                    ErrorIF.report_event({
-                        "trigger_id": TRIGGER_NAME,
-                        "phase"     : "loop",
-                        "category"  : "comm",
-                        "exc_type"  : type(e).__name__,
-                        "message"   : (
-                            f"Re-Connect Failed ({reconnect_fail_count} times). "
-                            f"{broker_host}:{broker_port}"
-                        ),
-                        "signature" : _SIG_OFFLINE,
-                    })
-                    base.output_log(MODULE_NAME,
-                        f"{TRIGGER_NAME} Re-Connect Failed ({reconnect_fail_count}). "
-                        f"{broker_host}:{broker_port}  ({type(e).__name__}: {e})", log_file)
+            # 接続できない間は再接続を試みる（間隔は ConnectState）。接続できる間に切断を検知したら接続し直す
+            _reconnect_if_due()
+            _recover_link()
 
             if (stop_event.is_set() and
                     post_queue.qsize() == 0 and
@@ -378,12 +450,15 @@ def _run_pub_trigger(
                     f"WARNING  空レコード。スキップ。 seg_id={seg_id}", log_file)
                 continue
 
-            """==== オフライン時の処理 ===="""
-            if not is_online:
-                if skip_on_offline:
+            """==== 接続できない間は、再接続の間隔ごとに再接続を試みる（セグメントが途切れず届く間も再接続できるように） ===="""
+            _reconnect_if_due()
+
+            """==== 接続できない間に届いたセグメントの処理（not_connectable_action） ===="""
+            if not conn_state.is_connectable():
+                if not_connectable_action == "skip":
                     skipped_seg_count += 1
                     base.output_log(MODULE_NAME,
-                        f"WARNING  OFFLINE - Segment Skipped. "
+                        f"WARNING  NOT CONNECTABLE - Segment Skipped. "
                         f"seg_id={seg_id}  total_skipped={skipped_seg_count}  "
                         f"{broker_host}:{broker_port}", log_file)
                     continue
@@ -391,69 +466,25 @@ def _run_pub_trigger(
                 else:
                     """ブロック待ち（停止チェック付き）"""
                     base.output_log(MODULE_NAME,
-                        f"{TRIGGER_NAME} OFFLINE - Waiting for reconnect... seg_id={seg_id}", log_file)
-                    while not is_online and not stop_event.is_set():
-                        try:
-                            mqtt_util.teardown_client(mqtt_client)
-                            mqtt_client = None
-                            mqtt_client = _build_client()
-                            connack_event.clear()
-                            mqtt_client.connect(broker_host, broker_port, keepalive)
-                            mqtt_client.loop_start()
-                            if not (connack_event.wait(timeout=10.0) and is_online):
-                                raise ConnectionError("CONNACK not received or connection refused")
-                            reconnect_fail_count = 0
-                            base.output_log(MODULE_NAME,
-                                f"{TRIGGER_NAME} Reconnected. {broker_host}:{broker_port}", log_file)
-                        except Exception as e:
-                            reconnect_fail_count += 1
-                            mqtt_util.teardown_client(mqtt_client)
-                            mqtt_client = None
-                            is_online = False
-                            base.output_log(MODULE_NAME,
-                                f"{TRIGGER_NAME} Re-Connect Failed ({reconnect_fail_count}). "
-                                f"Retry in {reconnect_interval_sec}s...", log_file)
-                            _responsive_wait(reconnect_interval_sec)
+                        f"{TRIGGER_NAME} NOT CONNECTABLE - Waiting for reconnect... seg_id={seg_id}", log_file)
+                    while not conn_state.is_connectable() and not stop_event.is_set():
+                        _reconnect_if_due()
+                        if not conn_state.is_connectable():
+                            _responsive_wait(min(1.0, reconnect_interval_sec))
 
                     if stop_event.is_set():
                         break
 
-            """==== Publish ===="""
-            sent_count = 0
-            send_error = False
-
-            # ==== mode="seg": 全行 Publish ====
+            """==== Publish するメッセージを作る ===="""
+            # ==== mode="seg": 全行を1行ずつ ====
             if mode == "seg" and publish_mode == "row":
-                for row_num, row_val in enumerate(segment, start=1):
+                payloads = []
+                for row_val in segment:
                     row_dict = {col_keys[i]: row_val[i] for i in range(len(col_keys))}
-                    payload  = json.dumps(row_dict, ensure_ascii=False, default=str)
+                    payloads.append(json.dumps(row_dict, ensure_ascii=False, default=str).encode(encode))
+                sent_count = len(segment)
 
-                    try:
-                        result = mqtt_client.publish(publish_topic, payload.encode(encode), qos=qos, retain=retain)
-                        if result.rc != 0:
-                            raise OSError(
-                                f"publish() failed. rc={result.rc}  "
-                                f"seg_id={seg_id}  row={row_num}")
-                        sent_count += 1
-
-                    except Exception as e:
-                        _sig = ErrorIF.report_exception(
-                            e, phase="loop", category="comm",
-                            trigger_id=TRIGGER_NAME, log_file=log_file)
-                        mqtt_util.teardown_client(mqtt_client)
-                        mqtt_client = None
-                        is_online            = False
-                        reconnect_fail_count = 0
-                        last_reconnect_try   = time.time()
-                        base.output_log(MODULE_NAME,
-                            f"{TRIGGER_NAME} Connection Lost. to Offline. "
-                            f"seg_id={seg_id}  sent={sent_count}/{len(segment)}", log_file)
-                        if _sig == SIGNAL_STOP:
-                            stop_event.set()
-                        send_error = True
-                        break
-
-            # ==== mode="seg" かつ publish_mode="segment": セグメント全体を1メッセージでPublish ====
+            # ==== mode="seg" かつ publish_mode="segment": セグメント全体を1メッセージで ====
             elif mode == "seg" and publish_mode == "segment":
                 row_dicts = [
                     {col_keys[i]: row_val[i] for i in range(len(col_keys))}
@@ -471,60 +502,24 @@ def _run_pub_trigger(
                     row_dicts.append({k: "____" for k in col_keys})
 
                 seg_payload = {"seg_id": seg_id, "row_count": len(row_dicts), "rows": row_dicts}
-                payload = json.dumps(seg_payload, ensure_ascii=False, default=str)
+                payloads   = [json.dumps(seg_payload, ensure_ascii=False, default=str).encode(encode)]
+                sent_count = len(row_dicts)  # ログ上は「まとめて送った行数」として扱う（マーカー行含む）
 
-                try:
-                    result = mqtt_client.publish(publish_topic, payload.encode(encode), qos=qos, retain=retain)
-                    if result.rc != 0:
-                        raise OSError(f"publish() failed. rc={result.rc}  seg_id={seg_id}")
-                    sent_count = len(row_dicts)  # ログ上は「まとめて送った行数」として扱う（マーカー行含む）
-
-                except Exception as e:
-                    _sig = ErrorIF.report_exception(
-                        e, phase="loop", category="comm",
-                        trigger_id=TRIGGER_NAME, log_file=log_file)
-                    mqtt_util.teardown_client(mqtt_client)
-                    mqtt_client = None
-                    is_online            = False
-                    reconnect_fail_count = 0
-                    last_reconnect_try   = time.time()
-                    base.output_log(MODULE_NAME,
-                        f"{TRIGGER_NAME} Connection Lost. to Offline. "
-                        f"seg_id={seg_id}  (segment mode, 1 message for {len(segment)} rows)", log_file)
-                    if _sig == SIGNAL_STOP:
-                        stop_event.set()
-                    send_error = True
-
-            # ==== mode="stats": 統計量 1 件 Publish ====
+            # ==== mode="stats": 統計量 1 件 ====
             else:  # mode == "stats"
                 stats_dict = calc_stats(stats_ctx, segment, seg_id)
-                payload    = json.dumps(stats_dict, ensure_ascii=False, default=str)
+                payloads   = [json.dumps(stats_dict, ensure_ascii=False, default=str).encode(encode)]
+                sent_count = 1
 
-                try:
-                    result = mqtt_client.publish(publish_topic, payload.encode(encode), qos=qos, retain=retain)
-                    if result.rc != 0:
-                        raise OSError(
-                            f"publish() failed. rc={result.rc}  seg_id={seg_id}")
-                    sent_count = 1
-
-                except Exception as e:
-                    _sig = ErrorIF.report_exception(
-                        e, phase="loop", category="comm",
-                        trigger_id=TRIGGER_NAME, log_file=log_file)
-                    mqtt_util.teardown_client(mqtt_client)
-                    mqtt_client = None
-                    is_online            = False
-                    reconnect_fail_count = 0
-                    last_reconnect_try   = time.time()
-                    base.output_log(MODULE_NAME,
-                        f"{TRIGGER_NAME} Connection Lost. to Offline. "
-                        f"seg_id={seg_id}  (stats mode)", log_file)
-                    if _sig == SIGNAL_STOP:
-                        stop_event.set()
-                    send_error = True
+            """==== Publish（リトライを含む） ===="""
+            send_error = not _publish_with_retry(payloads, seg_id)
+            if send_error:
+                base.output_log(MODULE_NAME,
+                    f"WARNING  {TRIGGER_NAME} Segment NOT Published (not connectable). "
+                    f"seg_id={seg_id}  mode={mode}", log_file)
 
             if not send_error:
-                _msg_count = 1 if (mode == "seg" and publish_mode == "segment") else sent_count
+                _msg_count = len(payloads)
                 base.output_log(MODULE_NAME,
                     f"{TRIGGER_NAME} Segment Published. "
                     f"seg_id={seg_id}  mode={mode}  publish_mode={publish_mode if mode == 'seg' else '-'}  "
@@ -542,11 +537,11 @@ def _run_pub_trigger(
             post_queue.task_done()
 
     """======== LOOP END ========"""
-    mqtt_util.teardown_client(mqtt_client)
+    _drop_client()
 
     if skipped_seg_count > 0:
         base.output_log(MODULE_NAME,
-            f"WARNING  {TRIGGER_NAME} Stopped with {skipped_seg_count} segment(s) skipped due to OFFLINE.",
+            f"WARNING  {TRIGGER_NAME} Stopped with {skipped_seg_count} segment(s) skipped due to NOT CONNECTABLE.",
             log_file)
 
     base.output_log(MODULE_NAME, f"{TRIGGER_NAME} Stop.", log_file)

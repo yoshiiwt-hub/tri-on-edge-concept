@@ -4,8 +4,9 @@
 """
 ########################################
 # Find Trigger Module [Remote File (SMB)]
-# Ver: 01.e.20261102    By: IWATA, Y.'s Agent AI
-# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
+# Ver: 01.g.20261108    By: IWATA, Y.'s Agent AI
+# Mod: smb_domain（または環境変数 SMB_DOMAIN）があると、ユーザー名にドメイン名を付けてセッションを登録する（SMB act と同じ形）。
+#      pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string を削除。動作は変えない）
 ########################################
 ネットワーク上の共有フォルダ（SMB）にあるファイルを監視して取り込む入口
 
@@ -13,7 +14,7 @@
 f_find_remote_file_trigger  # SMB の共有フォルダを監視し、未処理のファイル情報をキューに流す。
 
 位置づけ: ローカルのフォルダを監視する tri_s11_find_file の、共有フォルダ版。出力列は tri_s11_find_file と同じ。
-設計意図: OS にドライブを割り当てなくても、設定だけで共有フォルダに接続できるようにする。発見済みのファイルを SQLite に記録し、同じファイルを二重に処理しない。必要に応じてローカルにコピーしてから渡し、後続の処理が共有フォルダの通信に左右されないようにする。
+設計意図: OS にドライブを割り当てなくても、設定だけで共有フォルダに接続できるようにする。発見済みのファイルを SQLite に記録し、同じファイルを二重に処理しない。必要に応じてローカルにコピーしてから渡し、後続の処理が共有フォルダの通信に左右されないようにする。共有フォルダに届かなければ、つなぎ直し（リトライ）、続けて失敗したら接続できない（not_connectable）とする。接続できない状態の記録・再接続の間隔は tri_s01_connect_state に任せる。
 前提・制約: パスワードは環境変数（SMB_PASSWORD）で渡す。
 """
 MODULE_NAME = "FIND_SMB"
@@ -71,8 +72,8 @@ except ModuleNotFoundError:
         sys.exit(1)
 
 """local module"""
-import src.tri_s01_error_if as err
 from   src.tri_s01_error_if import ErrorIF, SIGNAL_STOP
+from   src.tri_s01_connect_state import ConnectState
 import src.tri_s19_util  as utl
 
 """system dir, file"""
@@ -97,7 +98,10 @@ def _list_smb_files(
     pfx_sfx: Tuple[List[str], List[str]],
     search_subdir: bool = False,
 ) -> List[str]:
-    """SMB共有フォルダのファイルをリストアップ（名前順）"""
+    """
+    SMB共有フォルダのファイルをリストアップ（名前順）
+    監視フォルダそのものを読めないときは例外のまま返す（接続の失敗として扱うため。サブフォルダの失敗はログだけ出して続ける）
+    """
     prefixes = tuple(f.lower() for f in (pfx_sfx[0] or []))
     suffixes = tuple(f.lower() for f in (pfx_sfx[1] or []))
     result = []
@@ -114,6 +118,8 @@ def _list_smb_files(
                 elif entry.is_dir(follow_symlinks=False) and search_subdir:
                     _scan(entry.path)
         except Exception as e:
+            if path == smb_path:
+                raise
             base.output_log(MODULE_NAME, f"_list_smb_files scan error: {path}  {e}", log_file)
 
     _scan(smb_path)
@@ -160,6 +166,12 @@ def f_find_remote_file_trigger(
     """
     SMB共有フォルダを監視し、条件に該当したファイル情報をキューに流す
     Mod: 2026.06.12    By: IWATA,Y.
+
+    [接続の扱い]
+        リトライ: 監視フォルダの一覧を取れなければ、retry_wait_sec ごとにつなぎ直して取り直す（このトリガーの中だけ）
+            連続 retry_max 回失敗したら、接続できない（not_connectable）と判定して ConnectState へ報告する（取れたら回数を 0 に戻す）
+        再接続: 接続できない間は reconnect_interval_sec ごとに試み、結果を ConnectState へ報告する（その間は一覧を取りに行かない）
+        接続の状態（ConnectState が登録。FIND_SMB）: connect_state / not_connectable_since / reconnect_fail_count / total_not_connectable
     """
     TRIGGER_NAME = "f_find_remote_file_trigger"
 
@@ -175,6 +187,11 @@ def f_find_remote_file_trigger(
 
         if not smb_server or not smb_share:
             raise ValueError(f"smb_server and smb_share required. smb_server={smb_server!r} smb_share={smb_share!r}")
+        retry_max              = int(config.get("retry_max", 3))
+        retry_wait_sec         = float(config.get("retry_wait_sec", 5.0))
+        reconnect_interval_sec = float(config.get("reconnect_interval_sec", 10.0))
+        if retry_max < 1 or retry_wait_sec < 0:
+            raise ValueError(f"config['retry_max'] must be >= 1 and config['retry_wait_sec'] >= 0. Got: {retry_max} / {retry_wait_sec}")
 
         # リモートフォルダパス構築
         remote_dir = config.get("remote_dir", "").replace("/", "\\").strip("\\")
@@ -202,18 +219,17 @@ def f_find_remote_file_trigger(
         base.output_log(MODULE_NAME,
             f"{TRIGGER_NAME} smb_dir={smb_dir} search_subdir={search_subdir} pfx_sfx={pfx_sfx} "
             f"stable_check_n={stable_check_n} check_ack={check_ack} ignore_old={ignore_old} "
-            f"copy_found={copy_found} interval_sec={interval_sec}",
+            f"copy_found={copy_found} interval_sec={interval_sec} retry_max={retry_max} "
+            f"retry_wait_sec={retry_wait_sec} reconnect_interval_sec={reconnect_interval_sec}",
             log_file)
 
         """ SMBセッション登録 """
         session_kwargs: Dict[str, Any] = {"port": smb_port}
         if smb_username:
-            session_kwargs["username"] = smb_username
+            session_kwargs["username"] = f"{smb_domain}\\{smb_username}" if smb_domain and "\\" not in smb_username else smb_username
         if smb_password:
             session_kwargs["password"] = smb_password
 
-        smbclient.register_session(smb_server, **session_kwargs)
-        base.output_log(MODULE_NAME, f"{TRIGGER_NAME} SMB Session Registered. server={smb_server} port={smb_port}", log_file)
 
         """発見済みファイル格納用DB"""
         db_path    = os.path.join(work_db_dir, f"{TRIGGER_NAME}_seen_files.db")
@@ -230,13 +246,117 @@ def f_find_remote_file_trigger(
         stop_event.set()
         return None
 
+    """======== SMB の接続の状態（判定・リトライはこのトリガー。記録・再接続の間隔・通知は ConnectState） ========"""
+    smb_state = ConnectState(TRIGGER_NAME, smb_base, reconnect_interval_sec, MODULE_NAME, log_file)
+    smb_fail  = 0       # 連続失敗の回数（判定に使う。このトリガーの中だけで数える）
+    smb_ok    = False   # 直前の操作で、共有フォルダに届いていたか
+
+    def _smb_wait(seconds: float) -> None:
+        """stop_event を見ながら細かく待つ"""
+        _end = time.time() + seconds
+        while time.time() < _end and not stop_event.is_set():
+            time.sleep(min(0.05, max(0.0, _end - time.time())))
+
+    def _smb_connect() -> Optional[BaseException]:
+        """
+        セッションを登録し（切れていれば smbclient がつなぎ直す）、共有フォルダに届くか確かめる。成功なら None、失敗ならその例外
+        """
+        nonlocal smb_ok
+        try:
+            smbclient.register_session(smb_server, **session_kwargs)
+            smbclient.stat(smb_dir)   # 監視フォルダに届くか
+            smb_ok = True
+            return None
+        except Exception as e:
+            smb_ok = False
+            return e
+
+    def _smb_count_fail(e: BaseException, what: str) -> bool:
+        """
+        接続の失敗を1回数える。連続 retry_max 回で not_connectable と判定して ConnectState へ報告し、False を返す
+        （続けるなら retry_wait_sec 待って True。リトライは画面のみに出し、ConnectState・ErrorIF へは報告しない）
+        """
+        nonlocal smb_fail
+        smb_fail += 1
+        if smb_fail >= retry_max:
+            smb_state.set_not_connectable(e)   # 判定：連続 retry_max 回の失敗
+            return False
+        if stop_event.is_set():
+            return False
+        base.output_log(MODULE_NAME,
+            f"{TRIGGER_NAME} Retry ({smb_fail}/{retry_max}). {what}  {smb_base}  ({type(e).__name__}: {e})")
+        _smb_wait(retry_wait_sec)
+        return True
+
+    def _smb_run(work, what: str) -> Tuple[bool, Any]:
+        """
+        work() を実行する。失敗したら共有フォルダに届くかを確かめ、届かなければ接続の失敗として
+        retry_wait_sec ごとにつなぎ直してやり直す（リトライ）。届くならファイル側の失敗として、例外のまま返す。
+        Returns: (実行できたか（not_connectable になったら False）, work() の戻り値)
+        """
+        nonlocal smb_fail
+        while True:
+            e = None if smb_ok else _smb_connect()
+            if e is None:
+                try:
+                    r = work()
+                    smb_fail = 0
+                    return True, r
+                except Exception as ex:
+                    if _smb_connect() is None:
+                        raise
+                    e = ex
+            if not _smb_count_fail(e, what):
+                return False, None
+
+    def _smb_reconnect_if_due() -> None:
+        """接続できない間、再接続の間隔が過ぎていれば再接続を試み、結果を ConnectState へ報告する"""
+        nonlocal smb_fail
+        if smb_state.should_try_reconnect():
+            e = _smb_connect()
+            if e is None:
+                smb_fail = 0
+                smb_state.set_connectable()
+            else:
+                smb_state.reconnect_failed(e)
+
+    """SMB の初回接続（retry_wait_sec ごとに retry_max 回まで試みる。つながらなくても止めない）"""
+    _smb_err: Optional[BaseException] = None
+    for _try in range(1, retry_max + 1):
+        _smb_err = _smb_connect()
+        if _smb_err is None:
+            base.output_log(MODULE_NAME, f"{TRIGGER_NAME} SMB Session Registered. server={smb_server} port={smb_port}", log_file)
+            break
+        if _try < retry_max and not stop_event.is_set():
+            base.output_log(MODULE_NAME,       # リトライは画面のみ
+                f"{TRIGGER_NAME} SMB Connect Retry ({_try}/{retry_max}). {smb_base}  ({type(_smb_err).__name__}: {_smb_err})")
+            _smb_wait(retry_wait_sec)
+    if _smb_err is not None:
+        _sig = ErrorIF.report_exception(_smb_err, phase="startup", category="comm",  # 初回接続の失敗を報告（A-21）
+                                         trigger_id=TRIGGER_NAME, log_file=log_file)
+        if _sig == SIGNAL_STOP:
+            stop_event.set()
+            return None
+        smb_state.set_not_connectable(_smb_err, report=False)   # ErrorIF へは上で phase=startup として通知済み
+
     """======== LOOP START ========"""
     n_col_def = len(col_def)
     count = 0
     while not stop_event.is_set():
         _now = time.time()
         try:
-            files = _list_smb_files(smb_dir, pfx_sfx, search_subdir)
+            # 接続できない間：再接続の間隔ごとに再接続を試みる（一覧は取りに行かない）
+            if not smb_state.is_connectable():
+                _smb_reconnect_if_due()
+                if not smb_state.is_connectable():
+                    ErrorIF.emit_summary_if_needed()
+                    _smb_wait(min(2.0, reconnect_interval_sec))
+                    continue
+
+            # 監視フォルダの一覧（届かなければリトライ。連続 retry_max 回で not_connectable）
+            listed, files = _smb_run(lambda: _list_smb_files(smb_dir, pfx_sfx, search_subdir), "List Files.")
+            if not listed:
+                continue
 
             for smb_path in files:
                 """ Check File """
@@ -327,7 +447,7 @@ def f_find_remote_file_trigger(
                 count += 1
                 queue_out.put((count, ['____'] + [None] * (n_col_def - 1)))
 
-            time.sleep(interval_sec)
+            _smb_wait(interval_sec)
 
         except Exception as e:
             _sig = ErrorIF.report_exception(e, phase="loop", category="io", trigger_id=TRIGGER_NAME, log_file=log_file)

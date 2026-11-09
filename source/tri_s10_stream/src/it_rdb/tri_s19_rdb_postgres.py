@@ -4,8 +4,8 @@
 """
 ########################################
 # PostgreSQL Client Utility Module
-# Ver: 01.l.20261104    By: IWATA, Y.'s Agent AI
-# Mod: pg_merge_env の docstring の既定値を実装に合わせて修正
+# Ver: 01.m.20261108    By: IWATA, Y.'s Agent AI
+# Mod: pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string を削除。動作は変えない）
 ########################################
 PostgreSQL を使うトリガーが共通で使う、接続・取得・登録・テーブル管理の部品集
 
@@ -28,7 +28,7 @@ from   datetime import datetime as dt
 import os
 import sys
 import traceback
-from   typing import Any, Dict, List, Optional, Tuple
+from   typing import Any, Dict, List, Tuple
 
 """external library"""
 import pg8000.dbapi as pg_dbapi   # PostgreSQL Adapter
@@ -563,5 +563,5 @@ def fetch_diff_data(
 
 if __name__ == "__main__":
     print(f"{MODULE_NAME} Run Standalone.")
-    base.output_log(MODULE_NAME, f"test show Log")
+    base.output_log(MODULE_NAME, "test show Log")
     base.output_log(MODULE_NAME, f"test save Log  {log_file}", log_file)

@@ -4,8 +4,8 @@
 """
 ########################################
 # Find Trigger Module [FTP Server]
-# Ver: 01.h.20261102    By: IWATA, Y.'s Agent AI
-# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
+# Ver: 01.i.20261108    By: IWATA, Y.'s Agent AI
+# Mod: pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string を削除。動作は変えない）
 ########################################
 装置が FTP で送ってくるファイルを、エッジ側の FTP サーバーで受け取って取り込む入口
 
@@ -24,9 +24,8 @@ import os
 import queue
 import sys
 import threading
-import time
 import traceback
-from   typing   import Any, Dict, List, Optional
+from   typing   import Any, Dict, Optional
 
 """external library"""
 from pyftpdlib.authorizers import DummyAuthorizer

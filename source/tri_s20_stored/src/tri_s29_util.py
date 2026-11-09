@@ -4,8 +4,8 @@
 """
 ########################################
 # Stored Common Utility
-# Ver: 01.g.20261104    By: IWATA, Y.'s Agent AI
-# Mod: 公開版に向け、非公開・旧名のモジュールへの言及を整理
+# Ver: 01.h.20261108    By: IWATA, Y.'s Agent AI
+# Mod: 残す pyarrow の import（pyflakes で使っていないと出る）に、消さない理由のコメントを付けた（動作は変えない）
 ########################################
 Stored 領域の各モジュールが共通で使う、ファイル読込み・キャッシュ・データ確認の部品集
 
@@ -32,7 +32,7 @@ from   typing   import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 """external library"""
 import pandas as pd
-try: import pyarrow
+try: import pyarrow # 名前は使わないが、save_parquet / load_parquet（pandas の to_parquet / read_parquet）のエンジンなので消さない（入っていなくても止めない）
 except ImportError: pass
 
 

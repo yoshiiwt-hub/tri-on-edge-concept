@@ -4,8 +4,8 @@
 """
 ########################################
 # Data Load Module [Guard Band Learning Data]
-# Ver: 01.e.20261102    By: IWATA, Y.'s Agent AI
-# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
+# Ver: 01.f.20261108    By: IWATA, Y.'s Agent AI
+# Mod: pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string を削除。動作は変えない）
 ########################################
 Stream が保存したセグメントの CSV を読み、分析・学習に使えるデータと列定義にする（Sin_wave のデータセット）
 
@@ -21,7 +21,6 @@ _00_load_raw    # セグメントの CSV 群を読む（結果を pickle にキ�
 MODULE_NAME = "SinWave"
 
 """standard library"""
-import os
 from   pathlib  import Path
 import sys
 from   typing   import Any, Dict, List, Optional, Tuple
@@ -193,7 +192,7 @@ def load_data(
     """
     from tri_s29_calc_stats import compile_register_map, build_stats
 
-    utl.log(f"Load Stat Data Start.", MODULE_NAME)
+    utl.log("Load Stat Data Start.", MODULE_NAME)
 
     df, col_def = load_wave_data()
     

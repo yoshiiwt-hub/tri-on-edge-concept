@@ -4,8 +4,8 @@
 """
 ########################################
 # EDA Visualizer
-# Ver: 01.c.20261102    By: IWATA, Y.'s Agent AI
-# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
+# Ver: 01.d.20261108    By: IWATA, Y.'s Agent AI
+# Mod: pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string を削除。動作は変えない）
 ########################################
 データの分布・関係・相関のグラフを画像で保存し、Excel のレポートにまとめる
 
@@ -59,7 +59,7 @@ def _parse_col_def(
     # col_defのキーは "0","1",... の文字列想定だが、念のため数値順にソートして走査する
     for k in sorted(col_def.keys(), key=lambda s: int(s) if str(s).isdigit() else s):
         entry = col_def[k]
-        name, dtype, role, var_type = entry[0], entry[1], entry[2], entry[3]
+        name, role, var_type = entry[0], entry[2], entry[3]
 
         if role == "category":
             IsQualittv.append(name)
@@ -99,7 +99,7 @@ def main(TITLE: str, df, col_def: Dict[str, List[Any]], config: Dict[str, Any]) 
     """
     from eda import tri_s29_eda_vz_dt as AFVD  # 可視化本体（画像保存・Excelレポート生成）
 
-    utl.log(f"Visualize Start.", MODULE_NAME)
+    utl.log("Visualize Start.", MODULE_NAME)
     OUTPUT = config.get("OUTDIR", "./output/")
 
     featurename, targetname, target_is, IsQualittv, IsQuanttv = _parse_col_def(col_def)
@@ -110,8 +110,8 @@ def main(TITLE: str, df, col_def: Dict[str, List[Any]], config: Dict[str, Any]) 
     )
 
     if targetname is None:
-        utl.log(f"WARNING  col_def に var_type='objective' の列が見つかりません。"
-                 f"目的変数なし（相関・分布の可視化のみ）として続行します。", MODULE_NAME)
+        utl.log("WARNING  col_def に var_type='objective' の列が見つかりません。"
+                 "目的変数なし（相関・分布の可視化のみ）として続行します。", MODULE_NAME)
 
     # 出力先ディレクトリ（末尾スラッシュを保証。gen_viz_report() 内部は文字列結合でパスを組むため）
     outdir = os.path.join(OUTPUT, "") if OUTPUT else "./output/"
