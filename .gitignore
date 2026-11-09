@@ -15,6 +15,7 @@ _\[CONFIDENTIAL\]/
 !/source/.gitignore
 
 !.gitignore
+!.gitattributes
 !.gitkeep
 !__init__.py
 !README.md
