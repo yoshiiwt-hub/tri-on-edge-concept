@@ -4,8 +4,8 @@
 """
 ########################################
 # Segment Stats Calculation Functions
-# Ver: 01.g.20261108    By: IWATA, Y.'s Agent AI
-# Mod: pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string を削除。動作は変えない）
+# Ver: 01.h.20261110    By: IWATA, Y.'s Agent AI
+# Mod: judge の range を「最小以上・最大未満」に変更（両端を含む → 最大を含まない）。最小 >= 最大は起動時にエラー
 ########################################
 セグメントから統計量を求める処理を、統計量を出力する Act の間で共通化する
 
@@ -251,7 +251,8 @@ def compile_register_map(
                          上から順に照合し、最初に一致した "to" を出す。どれにも一致しなければ default（省略時は値なし）
                          元の列の値が出せなかった場合も default
                 in     : 元の列の値がリストのどれかと等しい（元の列の dtype が str / int / float）
-                range  : 最小 <= 元の列の値 <= 最大（両端を含む。null は下限・上限なし。元の列の dtype が int / float）
+                range  : 最小 <= 元の列の値 < 最大（最小以上・最大未満。null は下限・上限なし。元の列の dtype が int / float）
+                         [m, n]・[n, l] と並べると、境目の n は後ろの [n, l] だけに入る
                 ※ 判定結果は必ず自分の列（新しい列）に出す。元の列の値は変えない
                 ※ in の値は元の列の dtype に、to / default は自分の列の dtype に、起動時に変換する（int は整数のみ）
 
@@ -263,7 +264,7 @@ def compile_register_map(
         - src_col_idx 範囲外・不正な名前 → ValueError
         - 不正 stat_name / 不正 params → ValueError
         - judge: 元の列が無い・自分自身・judge / dtype が int・float・str 以外（time 等）/ str の列に range /
-                 rules の形が不正（range の最小 > 最大を含む）/ dtype に変換できない値 → ValueError
+                 rules の形が不正（range の最小 >= 最大を含む）/ dtype に変換できない値 → ValueError
     [返り値]
         [(out_key, func(seg, n_rows) -> (value, warn_or_None)), ...]
         index 昇順にソート済み
@@ -576,6 +577,7 @@ class _JudgeFunc:
         src_key   : 元の列の出力キー名
         src_dtype : 元の列の dtype（照合の仕方を決める）
         rules     : [("in", frozenset, to) / ("range", (最小 or None, 最大 or None), to), ...]（上から順に照合）
+                    range は 最小 <= 値 < 最大（最小以上・最大未満）
         default   : どれにも一致しない・元の列の値が無いときの値（None なら値なし）
     Mod: 2026.10.29    By: IWATA, Y.'s Agent AI
     """
@@ -600,7 +602,7 @@ class _JudgeFunc:
             if kind == "in":
                 if key in cond:
                     return to
-            elif (cond[0] is None or cond[0] <= key) and (cond[1] is None or key <= cond[1]):
+            elif (cond[0] is None or cond[0] <= key) and (cond[1] is None or key < cond[1]):   # 最小以上・最大未満
                 return to
         return self.default
 
@@ -657,8 +659,8 @@ def _compile_judge(idx: str, entry: list, crm: Dict[str, Any], oc: Dict[str, Any
             if not isinstance(bounds, list) or len(bounds) != 2:
                 raise ValueError(f"{where}: range must be [min, max]")
             lo, hi = (None if v is None else _judge_cast(v, "float", f"{where} range") for v in bounds)
-            if lo is not None and hi is not None and lo > hi:
-                raise ValueError(f"{where}: range min {lo} > max {hi}")
+            if lo is not None and hi is not None and lo >= hi:
+                raise ValueError(f"{where}: range min {lo} >= max {hi} (range is min <= value < max)")
             rules.append(("range", (lo, hi), to))
     return _JudgeFunc(src_key, src_dtype, rules, default)
 
