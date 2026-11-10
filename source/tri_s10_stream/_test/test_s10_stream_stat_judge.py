@@ -4,14 +4,13 @@
 """
 ########################################
 # Unit Test [Wave Stats: judge]
-# Ver: 01.b.20261106    By: IWATA, Y.'s Agent AI
-# Mod: act_socket の設定の変更（skip_on_offline → not_connectable_action）に合わせた
-#      新規作成（column_register_map の judge: 統計量の値を条件で判定し、判定結果を新しい列に出す）
+# Ver: 01.c.20261110    By: IWATA, Y.'s Agent AI
+# Mod: judge の range を「最小以上・最大未満」に変えたことに合わせ、境目のテストを直し、最小 = 最大のエラーを追加
 ########################################
 統計量（tri_s10_stream_wave_stat）の judge と、統計量の act（a_save_stats_trigger）を通した出力のテスト
 
     確認すること
-      1. 数値の列 → 文字列の判定結果（range。両端を含む。上から順に最初の一致）
+      1. 数値の列 → 文字列の判定結果（range。最小以上・最大未満。境目の値は後ろの条件だけに入り、並べ方によらない）
       2. 文字列の列 → 数値の判定結果（in。to は自分の列の dtype、in の値は元の列の dtype に自動で変換）
       3. 数値の列の in（整数と小数を同じ値として比べる）
       4. 元の列の値は変わらないこと / 判定結果は新しい列に出ること
@@ -80,10 +79,13 @@ class TestStatJudge(unittest.TestCase):
         self.assertEqual((r["mean_lv"], r["min_lv"], r["max_lv"]), ("MID", "LOW", "HIGH"))
         self.assertAlmostEqual(r["mean"], 25.0, places=4)                      # 元の列は変わらない
 
-    def test_range_boundary_and_first_match(self):
-        seg = make_segment(["a"], [20])
-        comp = compile_specs([("v", "float", [1, "max"]), ("lv", "str", [0, "judge", LEVEL_RULES])])
-        self.assertEqual(stat.build_stats(seg, comp)["lv"], "LOW")            # 20 は LOW / MID の両方に入る → 先の LOW
+    def test_range_boundary_min_inclusive_max_exclusive(self):
+        for val, want in ((19.999, "LOW"), (20, "MID"), (29.999, "MID"), (30, "HIGH")):
+            for rules in (LEVEL_RULES, LEVEL_RULES[::-1]):                    # 並べ方を逆にしても同じ
+                with self.subTest(val=val, reversed=rules is not LEVEL_RULES):
+                    seg = make_segment(["a"], [val])
+                    comp = compile_specs([("v", "float", [1, "max"]), ("lv", "str", [0, "judge", rules])])
+                    self.assertEqual(stat.build_stats(seg, comp)["lv"], want)  # 20 は MID（LOW は 20 未満）
 
     def test_string_to_number_by_in_with_auto_conversion(self):
         comp = compile_specs([
@@ -144,6 +146,7 @@ class TestStatJudge(unittest.TestCase):
             [num, ("j", "str", [0, "judge", [{"in": [1], "range": [0, 1], "to": "x"}]])],  # 両方
             [num, ("j", "str", [0, "judge", [{"in": [1]}]])],                   # to が無い
             [num, ("j", "str", [0, "judge", [{"range": [5, 1], "to": "x"}]])],  # 最小 > 最大
+            [num, ("j", "str", [0, "judge", [{"range": [5, 5], "to": "x"}]])],  # 最小 = 最大（最大未満なので一致する値が無い）
             [num, ("j", "str", [0, "judge", [{"range": [1], "to": "x"}]])],     # range の形
             [num, ("j", "int", [0, "judge", [{"in": [1], "to": "LOW"}]])],      # int に変換できない to
             [num, ("j", "int", [0, "judge", [{"in": [1], "to": 1.5}]])],        # 整数でない to

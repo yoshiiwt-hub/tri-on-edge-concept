@@ -422,7 +422,7 @@ def f_find_slmp_trigger(
             queue_out.put((count, row))
             fail_count = 0   # 読めたら連続失敗の回数を 0 に戻す
             base.output_log(MODULE_NAME,
-                f"{TRIGGER_NAME} Queued #{count}: {row[:4]}...", log_file)
+                f"{TRIGGER_NAME} Queued #{count}: {row[:]}...", log_file)
             count += 1
 
             _responsive_wait(polling_sec)
