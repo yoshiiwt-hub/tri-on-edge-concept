@@ -4,8 +4,8 @@
 """
 ########################################
 # Find Trigger Module [SLMP]
-# Ver: 02.i.20261108    By: IWATA, Y.'s Agent AI
-# Mod: pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string を削除。動作は変えない）
+# Ver: 02.j.20261110    By: IWATA, Y.'s Agent AI
+# Mod: 取り込んだ行の表示を画面だけにし（ログファイルには書かない）、全部の列を出す。末尾の ... を削除
 ########################################
 MELSEC・キーエンス等の PLC から、SLMP でデバイス・ラベルの値を取り込む入口
 
@@ -421,8 +421,7 @@ def f_find_slmp_trigger(
                 row[col_idx] = col_func(bulk_buffers)
             queue_out.put((count, row))
             fail_count = 0   # 読めたら連続失敗の回数を 0 に戻す
-            base.output_log(MODULE_NAME,
-                f"{TRIGGER_NAME} Queued #{count}: {row[:]}...", log_file)
+            base.output_log(MODULE_NAME, f"{TRIGGER_NAME} Queued #{count}: {row}")   # 正常は画面のみ（ログファイルには書かない）
             count += 1
 
             _responsive_wait(polling_sec)
