@@ -4,13 +4,14 @@
 """
 ########################################
 # Act Trigger Module [Tkinter Viz - Graph]
-# Ver: 02.c.20261102    By: IWATA, Y.'s Agent AI
-# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
+# Ver: 02.d.20261113    By: IWATA, Y.'s Agent AI
+# Mod: セグメントを簡易的な CSV（列名1行＋全行）で保存するオプションを追加（save_csv。既定は保存しない）
 ########################################
 セグメントの波形を、ウィンドウにリアルタイムで描く表示の雛形
 
 主要関数:
 a_viz_graph_trigger  # 指定した列の波形を、直近のセグメントと重ねてウィンドウに描く。
+_save_segment_csv    # セグメントを簡易的な CSV（列名1行＋全行）で保存する（save_csv: true のとき）。
 
 位置づけ: 値の一覧を表示する場合は tri_s12_act_viz_tk_value を使う。
 設計意図: tkinter の mainloop() はキューの受信を止めてしまうため使わず、セグメントを受け取るたびに画面の更新を処理する。ウィンドウを閉じたら停止ファイルを作り、StreamCore を穏やかに止める。
@@ -19,6 +20,7 @@ a_viz_graph_trigger  # 指定した列の波形を、直近のセグメントと
 MODULE_NAME = "ACT_Viz_Tkinter_Graph"
 
 """standard library"""
+import csv
 import os
 import queue
 import sys
@@ -93,6 +95,10 @@ _DEFAULTS = {
     "overlay_color": "gray",
     "bg_color"     : "black",
     "text_color"   : "white",
+    "save_csv"     : False,        # True のとき、セグメントを簡易的な CSV で保存する
+    "save_dir"     : "output",     # 保存先（system_root からの相対パス。絶対パスも可）
+    "encode"       : "utf-8",      # CSV の文字コード
+    "file_pfx"     : "viz_graph",  # ファイル名の先頭
 }
 
 
@@ -167,6 +173,43 @@ def _build_layout(
 
 
 ########################################
+# CSV 保存ヘルパー
+########################################
+
+def _save_segment_csv(
+    segment:      List[List[Any]],
+    col_names:    List[str],
+    save_dir:     str,
+    file_pfx:     str,
+    file_counter: int,
+    seg_id:       Any,
+    encode_:      str,
+) -> str:
+    """
+    セグメントを簡易的な CSV（列名の1行＋セグメントの全行・全列）で保存し、保存したファイルのパスを返す
+    ファイル名は {file_pfx}{連番3桁}_{seg_id}.csv。書きかけのファイルが見えないよう、.tmp に書いてから名前を変える
+    失敗したときは .tmp を消して、例外をそのまま投げる（呼び出し側が ErrorIF へ報告する）
+    Mod: 2026.11.13    By: IWATA, Y.'s Agent AI
+    """
+    path = os.path.join(save_dir, f"{file_pfx}{file_counter:03}_{seg_id}.csv")
+    tmp  = f"{path}.tmp"
+    try:
+        with open(tmp, "w", newline="", encoding=encode_) as f:
+            writer = csv.writer(f)
+            writer.writerow(col_names)
+            writer.writerows(segment)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
+        raise
+    return path
+
+
+########################################
 # キュー受信・共通前処理ヘルパー
 ########################################
 
@@ -224,7 +267,14 @@ def a_viz_graph_trigger(
 ) -> None:
     """
     セグメントの波形をtkinterウィンドウにリアルタイム表示
+    [CSV 保存（任意）]
+        save_csv : true のとき、受け取ったセグメントを 1 セグメント 1 ファイルの CSV で保存する（既定 false = 保存しない）
+                   列名の1行＋全行・全列。描けないセグメント（数値が2点未満）や、ウィンドウを閉じた後も保存する
+        save_dir : 保存先（既定 "output"。system_root からの相対パス）/ encode : 文字コード（既定 "utf-8"）
+        file_pfx : ファイル名の先頭（既定 "viz_graph"）。ファイル名は {file_pfx}{連番3桁}_{seg_id}.csv
+        保存に失敗したら ErrorIF へ報告し（category io）、表示は続ける。保存したことは画面のみに出す
     Mod: 2026.07.30    By: IWATA,Y.
+    Mod: 2026.11.13    By: IWATA, Y.'s Agent AI（CSV 保存のオプションを追加）
     """
     TRIGGER_NAME = "a_viz_graph_trigger"
 
@@ -254,6 +304,17 @@ def a_viz_graph_trigger(
         base.output_log(MODULE_NAME,
             f"{TRIGGER_NAME} val_col_idx={val_col_idx}(actual={actual_col_idx}, name={col_name})  "
             f"window={window_w}x{window_h}  max_overlay={max_overlay}", log_file)
+
+        """ CSV 保存（任意） """
+        save_csv = bool(config.get("save_csv", _DEFAULTS["save_csv"]))
+        save_dir = os.path.join(system_root, str(config.get("save_dir", _DEFAULTS["save_dir"])))
+        encode_  = str(config.get("encode", _DEFAULTS["encode"]))
+        file_pfx = str(config.get("file_pfx", _DEFAULTS["file_pfx"]))
+        csv_col_names = [str(col_def[k][0]) for k in sorted(col_def.keys())]
+        if save_csv:
+            os.makedirs(save_dir, exist_ok=True)
+            base.output_log(MODULE_NAME,
+                f"{TRIGGER_NAME} save_csv=True  save_dir={save_dir}  encode={encode_}  file_pfx={file_pfx}", log_file)
 
         """ Tkウィンドウ構築 """
         root = tk.Tk()
@@ -330,6 +391,7 @@ def a_viz_graph_trigger(
 
     """======== LOOP START ========"""
     base.output_log(MODULE_NAME, f"{TRIGGER_NAME} Start Loop...", log_file)
+    file_counter = 1
     while True:
 
         """キュー受信"""
@@ -355,6 +417,19 @@ def a_viz_graph_trigger(
             if validated is None:
                 continue
             seg_id, segment = validated
+
+            """CSV 保存（任意。描けるかどうか・ウィンドウの有無によらず保存する）"""
+            if save_csv:
+                try:
+                    path = _save_segment_csv(segment, csv_col_names, save_dir, file_pfx, file_counter, seg_id, encode_)
+                    file_counter += 1
+                    base.output_log(MODULE_NAME, f"{TRIGGER_NAME} CSV Saved: {os.path.basename(path)}")   # 画面のみ
+                except Exception as e:
+                    _sig = ErrorIF.report_exception(e, phase="loop", category="io",
+                                                    trigger_id=TRIGGER_NAME, log_file=log_file)
+                    if _sig == SIGNAL_STOP:
+                        stop_event.set()
+                        break
 
             vals = _extract_numeric_col(segment, actual_col_idx)
             if len(vals) < 2:

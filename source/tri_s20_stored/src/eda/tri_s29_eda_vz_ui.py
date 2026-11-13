@@ -7,13 +7,16 @@
 #    d_df['_idx'][[y_+'_ss']]（二重角括弧=DataFrame）に .min()/.max() をかけていたため、
 #    int()変換でSeriesを渡すことになりTypeErrorになっていた。d_df['_idx'][y_+'_ss']
 #    （単一角括弧=Series）に修正（AnalyzeFunctionsVZ_DT.py で見つけた同系統のバグと同じパターン）。
+#  ②def_plot_const()・gen_interact_scatter() 内 def_step()・gen_interact_dist() で、
+#    値や列名を文字列として埋め込んだ df.query() を使っていたため、WVID が文字列
+#    （例: ファイル名由来の seg_id "2026-09-17-200000"）の時や、列名に記号を含む時に
+#    SyntaxError になっていた。比較式での抽出（df[df[col] == v]）に修正（2026.11.12）。
 ################################################################
 """
 ########################################
 # EDA Visualization Library [Interactive]（旧 AnalyzeFunctionsVZ_UI）
-# Ver: 01.e.20261108    By: IWATA, Y.'s Agent AI
-# Mod: pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string を削除。動作は変えない）。
-#      改行を CRLF にそろえた
+# Ver: 01.f.20261112    By: IWATA, Y.'s Agent AI
+# Mod: WVID が文字列の時や、列名に記号を含む時に、抽出（df.query）が失敗する不具合を修正（比較式での抽出に置き換え）
 ########################################
 散布図・分布・折れ線・波形の重ね描きを、対話的なグラフ（Plotly）で作る可視化の本体
 
@@ -125,9 +128,9 @@ def def_plot_const(df, l_ql_, l_qn_, tar_):
         for ql_ in l_col_ql:
             for cl_ in d_ql_cl[ql_]:
                 ql_cl_ = ql_+'_'+cl_
-                qry_ = '{} in {} and WVID != -1'.format(ql_, str([cl_]))
-                d_ql_cl_wvid[ql_cl_] = list(np.sort(df.query(qry_)['WVID'].unique()))
-                d_ql_cl_wvdf[ql_cl_] = [df.query('WVID=={}'.format(s)) for s in d_ql_cl_wvid[ql_cl_]]
+                msk_ = (df[ql_] == cl_) & (df['WVID'] != -1)
+                d_ql_cl_wvid[ql_cl_] = list(np.sort(df.loc[msk_, 'WVID'].unique()))
+                d_ql_cl_wvdf[ql_cl_] = [df[df['WVID'] == s] for s in d_ql_cl_wvid[ql_cl_]]
             ##:for
         ##:for
     ##:if
@@ -678,8 +681,7 @@ def gen_interact_scatter(df, l_ql_, l_qn_, tar_, d_cfg_):
             for k, l in d_ql_cl.items():
                 for v in l:
                      ql_cl = k+'_'+str(v)
-                     q_ = '{} in {}'.format(k, [v])
-                     d_ql_cl_n[ql_cl] = len(df.query(q_))
+                     d_ql_cl_n[ql_cl] = int((df[k] == v).sum())
                  ##:for
             ##:for
             
@@ -901,8 +903,7 @@ def gen_interact_dist(df, l_ql_, l_qn_, tar_, d_cfg_):
     for k, l in d_ql_cl.items():
          for v in l:
              ql_cl = k+'_'+str(v)
-             q_ = '{} in {}'.format(k,[v])
-             d_ql_cl_n[ql_cl] = len(df.query(q_))
+             d_ql_cl_n[ql_cl] = int((df[k] == v).sum())
          ##:for
     ##:for
     

@@ -105,6 +105,7 @@
 !/_test/test_s12_act_driver.py
 !/_test/test_s12_act_socket_log.py
 !/_test/test_s12_act_tmpl_queue_stats.py
+!/_test/test_s12_act_viz_tk_graph_csv.py
 
 !/_test/sample_server/
 /_test/sample_server/*
