@@ -4,8 +4,8 @@
 """
 ########################################
 # Find Trigger Module [FTP Server]
-# Ver: 01.j.20261114    By: IWATA,Y.'s Agent AI
-# Mod: 停止を速くし、サーバーのスレッドが残らないようにした（サーバーは専用のスレッドで回して、同じスレッドで閉じる）
+# Ver: 01.k.20261114    By: IWATA,Y.'s Agent AI
+# Mod: FTP サーバーの開始メッセージ（pyftpdlib）が 0.5 秒ごとに出る不具合を直した（serve_forever() の代わりに ioloop.loop() を呼ぶ）
 ########################################
 装置が FTP で送ってくるファイルを、エッジ側の FTP サーバーで受け取って取り込む入口
 
@@ -208,10 +208,11 @@ def f_find_ftp_trigger(
 
         def _serve() -> None:
             """FTP サーバーを回し、srv_stop が立ったら同じスレッドで閉じる
-            （別のスレッドから close_all() を呼んでも serve_forever() は抜けないため）"""
+            （別のスレッドから close_all() を呼んでも serve_forever() は抜けないため。
+            serve_forever() は呼ぶたびに開始メッセージを出すので、中で呼ばれている ioloop.loop() を直接呼ぶ）"""
             try:
                 while not srv_stop.is_set():
-                    server.serve_forever(timeout=0.5, blocking=False, handle_exit=False)
+                    server.ioloop.loop(timeout=0.5, blocking=False)   # 1回待って戻る（予定された処理も動かす）
             finally:
                 server.close_all()
 

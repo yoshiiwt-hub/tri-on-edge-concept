@@ -4,8 +4,9 @@
 """
 ########################################
 # Single Run Test [Find Trigger: FTP]
-# Ver: 01.c.20261114    By: IWATA,Y.'s Agent AI
-# Mod: 停止の指示から、トリガーと FTP サーバーのスレッドが 2 秒以内に終わり、同じポートで再び起動できることのテストを追加。
+# Ver: 01.d.20261114    By: IWATA,Y.'s Agent AI
+# Mod: 動かしている間に pyftpdlib の開始メッセージが繰り返し出ないことの確認を、停止のテストに追加。無通信の接続を server_timeout で切ることのテストを追加。
+#      停止の指示から、トリガーと FTP サーバーのスレッドが 2 秒以内に終わり、同じポートで再び起動できることのテストを追加。
 #      1ファイルごとの正常なログが画面のみ（ログファイルに書かない）ことのテストを追加。
 #      新規作成（受信後のリネームで pfx_sfx に該当するようになったファイルの処理）
 ########################################
@@ -20,13 +21,16 @@ f_find_ftp_trigger を localhost の空きポートで起動し、標準ライ�
       5. 失敗したリネーム（存在しないファイル）とディレクトリのリネームでは何も送られないこと
       6. 1ファイルごとの正常なログ（File received / File renamed / not matched, skip / Queued）は画面のみで、
          ログファイルには書かないこと（base.output_log に log_file を渡さない）
-      7. 停止の指示から、トリガーと FTP サーバーのスレッドが 2 秒以内に終わり、同じポートで再び起動できること
+      7. 停止の指示から、トリガーと FTP サーバーのスレッドが 2 秒以内に終わり、同じポートで再び起動できること。
+         動かしている間に pyftpdlib の開始メッセージ（starting FTP server）が繰り返し出ないこと
+      8. 無通信の接続は server_timeout の秒数でサーバーから切られること
 
 実行: tri_s10_stream/ で  python -m unittest _test.test_s11_find_ftp -v
 """
 import ftplib
 import importlib.util
 import io
+import logging
 import os
 import queue
 import shutil
@@ -58,6 +62,23 @@ def _free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
+
+
+class _LogCapture(logging.Handler):
+    """pyftpdlib のログを集める（開始メッセージが繰り返し出ないことの確認用）"""
+    def __init__(self) -> None:
+        super().__init__()
+        self.messages: List[str] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.messages.append(record.getMessage())
+
+    def __enter__(self) -> "_LogCapture":
+        logging.getLogger("pyftpdlib").addHandler(self)
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        logging.getLogger("pyftpdlib").removeHandler(self)
 
 
 @unittest.skipUnless(HAS_PYFTPDLIB, "pyftpdlib is not installed")
@@ -182,7 +203,21 @@ class TestFindFtpRename(unittest.TestCase):
             self.assertTrue(hits, (head, logs))
             self.assertFalse([f for _, f in hits if f], (head, hits))   # log_file を渡さない（画面のみ）
 
+    def _restart(self, **overrides: Any) -> None:
+        """止めてから、設定を変えて同じポートで再び起動する（後片付けは setUp の _stop）"""
+        self._stop()
+        from src.comm_ftp.tri_s11_find_ftp import f_find_ftp_trigger
+        self.out_queue, self.stop_event = queue.Queue(), threading.Event()
+        self.thread = threading.Thread(target=f_find_ftp_trigger,
+                                       args=(self.out_queue, COL_DEF, {**self.config, **overrides}, self.stop_event),
+                                       daemon=True)
+        self.thread.start()
+        self.ftp = self._connect()
+
     def test_stop_is_quick_and_server_thread_ends(self):
+        with _LogCapture() as cap:
+            time.sleep(1.5)                                     # serve の繰り返しが3回ほど回る間
+        self.assertFalse([m for m in cap.messages if "starting" in m], cap.messages)
         srv = [th for th in threading.enumerate() if th.name == "f_find_ftp_trigger_server" and th.is_alive()]
         self.assertEqual(len(srv), 1)
         t0 = time.time()
@@ -200,6 +235,13 @@ class TestFindFtpRename(unittest.TestCase):
         self.ftp = self._connect()
         self._upload("again.csv")
         self.assertEqual(self._queued_names(), ["again.csv"])
+
+    def test_idle_connection_is_closed_by_server_timeout(self):
+        self._restart(server_timeout=1)
+        self.ftp.voidcmd("NOOP")                                # つながっている
+        time.sleep(3.0)                                         # server_timeout（1 秒）より長く放置
+        with self.assertRaises((ftplib.Error, EOFError, OSError)):
+            self.ftp.voidcmd("NOOP")                            # サーバーから切られている
 
 
 if __name__ == "__main__":

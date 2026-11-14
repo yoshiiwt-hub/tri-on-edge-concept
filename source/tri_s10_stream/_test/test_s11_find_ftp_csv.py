@@ -4,8 +4,9 @@
 """
 ########################################
 # Single Run Test [Find Trigger: FTP + Text]
-# Ver: 01.b.20261114    By: IWATA,Y.'s Agent AI
-# Mod: 停止の指示から、トリガーと FTP サーバーのスレッドが 2 秒以内に終わり、同じポートで再び起動できることのテストを追加。
+# Ver: 01.c.20261114    By: IWATA,Y.'s Agent AI
+# Mod: 動かしている間に pyftpdlib の開始メッセージが繰り返し出ないことの確認を、停止のテストに追加。
+#      停止の指示から、トリガーと FTP サーバーのスレッドが 2 秒以内に終わり、同じポートで再び起動できることのテストを追加。
 #      新規作成（FTP で受け取った区切りテキストを読み、1ファイル = 1セグメントで流す f_find_ftp_csv_trigger）
 ########################################
 f_find_ftp_csv_trigger を localhost の空きポートで起動し、標準ライブラリの ftplib で区切りテキストを送って、
@@ -20,13 +21,15 @@ f_find_ftp_csv_trigger を localhost の空きポートで起動し、標準ラ�
       6. 読込みに失敗したファイルは ErrorIF へ報告して飛ばし（後片付けしない）、次のファイルは読む
       7. 設定の誤りで、起動時に止まる
       8. 1ファイルごとの正常なログは画面のみ（log_file を渡さない）。読込みの失敗はログファイルにも残す
-      9. 停止の指示から、トリガーと FTP サーバーのスレッドが 2 秒以内に終わり、同じポートで再び起動できる
+      9. 停止の指示から、トリガーと FTP サーバーのスレッドが 2 秒以内に終わり、同じポートで再び起動できる。
+         動かしている間に pyftpdlib の開始メッセージ（starting FTP server）が繰り返し出ない
 
 実行: tri_s10_stream/ で  python -m unittest _test.test_s11_find_ftp_csv -v
 """
 import ftplib
 import importlib.util
 import io
+import logging
 import os
 import queue
 import shutil
@@ -76,6 +79,23 @@ def _free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
+
+
+class _LogCapture(logging.Handler):
+    """pyftpdlib のログを集める（開始メッセージが繰り返し出ないことの確認用）"""
+    def __init__(self) -> None:
+        super().__init__()
+        self.messages: List[str] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.messages.append(record.getMessage())
+
+    def __enter__(self) -> "_LogCapture":
+        logging.getLogger("pyftpdlib").addHandler(self)
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        logging.getLogger("pyftpdlib").removeHandler(self)
 
 
 @unittest.skipUnless(HAS_PYFTPDLIB, "pyftpdlib is not installed")
@@ -277,9 +297,11 @@ class TestFindFtpText(unittest.TestCase):
         self.assertNotEqual(errors[0][1], "")                       # ログファイルにも残す
 
     def test_stop_is_quick_and_server_thread_ends(self):
-        q, stop, t = self._start()
-        self._upload("A_1.csv", CSV_TEXT.encode())
-        self.assertEqual(len(self._segments(q)), 1)
+        with _LogCapture() as cap:
+            q, stop, t = self._start()
+            self._upload("A_1.csv", CSV_TEXT.encode())
+            self.assertEqual(len(self._segments(q)), 1)         # 1.5 秒待つ間に、serve の繰り返しが何回も回る
+        self.assertFalse([m for m in cap.messages if "starting" in m], cap.messages)
         srv = [th for th in threading.enumerate() if th.name == "f_find_ftp_csv_trigger_server" and th.is_alive()]
         self.assertEqual(len(srv), 1)
         t0 = time.time()
