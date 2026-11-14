@@ -44,9 +44,29 @@
     , "find_trigger": {
           "module": "src.tri_s11_find_demo"
         , "func"  : "f_demo_csv_trigger"
+
+        , "##": "---- 画面表示 ----"
+        , "##": "true にすると、毎ループの表示（送った行の波形のバー）を画面に出す（ログファイルには書かない）"
+        , "##": "例: true / false（省略時）"
+        , "show_in_loop": true
+
+        , "##": "デモ用の CSV ファイル（system_root からの相対パス）。1行目は見出し行"
+        , "##": "1行ずつ読んで、列の順に column へ入れる"
+        , "##": "例: settings/data/generate_waveform_sample.csv"
         , "file_path": "settings/data/generate_waveform_sample.csv"
         , "##file_path": "settings/data/generate_waveform_sample_invalid.csv"
+        , "##": "CSV の文字コード。省略時は utf-8"
+        , "##": "例: utf-8"
         , "encode"   : "utf-8"
+        , "##": "1行を送る間隔（秒）。省略時は 0.1"
+        , "##": "例: 0.1"
         , "interval" : 0.1
+
+        , "##": "---- 型変換の既定値（すべて省略可）----"
+        , "##": "値が無い・変換できないときの既定値。time_format は時刻の書式"
+        , "##": "省略時: time_format = %Y-%m-%d %H:%M:%S.%f"
+        , "##": "  time_default = 2999-01-01 00:00:00.000000"
+        , "##": "  int_default = -9999 / float_default = -9999.9"
+        , "##": "  str_default = __"
     }
 }

@@ -4,9 +4,8 @@
 """
 ########################################
 # Find Trigger Module [Agentic Template]
-# Ver: 01.g.20261106    By: IWATA, Y.'s Agent AI
-# Mod: 接続できない状態の管理を共通の tri_s01_connect_state（ConnectState）に置き換え。通信の失敗は retry_wait_sec ごとに
-#      ソケットだけつなぎ直し（リトライ）、連続 retry_max 回で not_connectable とする。interval_reconn_sec → reconnect_interval_sec
+# Ver: 01.h.20261114    By: IWATA,Y.'s Agent AI
+# Mod: 毎ループの画面表示を、設定 show_in_loop（省略時 false）で出すかどうか選べるようにした
 ########################################
 別プロセスのエージェントから値を受け取って取り込む、Agentic Trigger の Find 側の雛形
 
@@ -93,7 +92,7 @@ def f_agentic_trigger(
 ) -> None:
     """
     Agent を Subprocess で起動・管理
-    Mod: 2026.04.24    By: IWATA,Y.
+    Mod: 2026.11.14    By: IWATA,Y.'s Agent AI
 
     [動作の要点]（旧モジュール Docstring から移動）
         エージェントとは GET / ACK / NACK で通信する。受信した JSON を col_def の dtype で型変換し、失敗したら NACK を送って送り直してもらう（最大 99 回）
@@ -101,6 +100,7 @@ def f_agentic_trigger(
             連続 retry_max 回失敗したら、接続できない（not_connectable）と判定して ConnectState へ報告する（受け取れたら回数を 0 に戻す）
         再接続: 接続できない間は reconnect_interval_sec ごとに、エージェントを起動し直してからつなぎ、結果を ConnectState へ報告する
         接続の状態（ConnectState が登録。FIND_AGENTIC）: connect_state / not_connectable_since / reconnect_fail_count / total_not_connectable
+        画面表示: show_in_loop が true なら、受け取った値を毎回画面に出す（ログファイルには書かない）。省略時は false
     """
     TRIGGER_NAME = "f_agentic_trigger"
     
@@ -267,6 +267,8 @@ def f_agentic_trigger(
         server_port = int(config.get("server_port", 52001))
         polling_ms  = config.get("polling_ms", 100)
         polling_sec = polling_ms / 1000
+        show_in_loop = bool(config.get("show_in_loop", False))   # true で毎ループの表示を画面に出す（ログファイルには書かない）
+        base.output_log(MODULE_NAME, f"{TRIGGER_NAME} show_in_loop={show_in_loop}", log_file)
         
         connect_timeout_sec   = config.get("connect_timeout_sec", 5)
         server_start_wait_sec = config.get("server_start_wait_sec", 10.0)
@@ -498,10 +500,11 @@ def f_agentic_trigger(
                 ))
 
                 """4. Viz (Debug)"""
-                _timestamp = dt.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]##
-                _dev_name  = base.load_device_info()["dev_name"]##
-                sys.stdout.write(f"{count:<3} {_timestamp} {_dev_name} {value}\n")##
-                sys.stdout.flush()##
+                if show_in_loop:
+                    _timestamp = dt.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]##
+                    _dev_name  = base.load_device_info()["dev_name"]##
+                    sys.stdout.write(f"{count:<3} {_timestamp} {_dev_name} {value}\n")##
+                    sys.stdout.flush()##
                 
                 count += 1
                 fail_count = 0   # 受け取れたら連続失敗の回数を 0 に戻す

@@ -4,8 +4,8 @@
 """
 ########################################
 # Find Trigger Module [Socket]
-# Ver: 06.k.20261108    By: IWATA, Y.'s Agent AI
-# Mod: pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string を削除。動作は変えない）
+# Ver: 06.l.20261114    By: IWATA,Y.'s Agent AI
+# Mod: 毎ループの画面表示の設定を VERBOSE から show_in_loop（省略時 false）に変えた
 ########################################
 TCP ソケットサーバーに要求を送り、返ってきた値を取り込む入口
 
@@ -101,7 +101,7 @@ def f_socket_client_trigger(
 ) -> None:
     """
     Get Data from Socket Server
-    Mod: 2026.11.06    By: IWATA, Y.'s Agent AI（接続できない状態の管理を ConnectState に置き換え）
+    Mod: 2026.11.14    By: IWATA,Y.'s Agent AI
 
     [接続できない状態の扱い]
         接続の失敗・受信中の切断は、retry_wait_sec ごとにその場でつなぎ直す（リトライ。このトリガーの中だけ）。
@@ -109,6 +109,9 @@ def f_socket_client_trigger(
         以降は reconnect_interval_sec ごとに再接続を試みて、結果を ConnectState へ報告する（その間は値を取り込まない）。
         受信のタイムアウト（socket.timeout）は失敗に数えない（次の要求へ進む）。
         接続の状態（ConnectState が登録）: connect_state / not_connectable_since / reconnect_fail_count / total_not_connectable
+
+    [画面表示]
+        show_in_loop が true なら、受け取った値を毎回画面に出す（ログファイルには書かない）。省略時は false
     """
     TRIGGER_NAME = "f_socket_client_trigger"
 
@@ -142,7 +145,7 @@ def f_socket_client_trigger(
     
     base.output_log(MODULE_NAME, f"{TRIGGER_NAME} Start.", log_file)
     try:
-        VERBOSE = config.get("VERBOSE", False)
+        show_in_loop = bool(config.get("show_in_loop", False))   # true で毎ループの表示を画面に出す
 
         """ Col Define """
         ##dtype_define = [col_def[k][1] for k in sorted(col_def.keys())]
@@ -174,7 +177,7 @@ def f_socket_client_trigger(
             raise ValueError(f"config['retry_max'] must be >= 1 and config['retry_wait_sec'] >= 0. Got: {retry_max} / {retry_wait_sec}")
         base.output_log(MODULE_NAME,
             f"server_ip={server_ip} server_port={server_port} retry_max={retry_max} retry_wait_sec={retry_wait_sec} "
-            f"reconnect_interval_sec={reconnect_interval_sec}", log_file)
+            f"reconnect_interval_sec={reconnect_interval_sec} show_in_loop={show_in_loop}", log_file)
 
         # 接続の状態（判定・リトライはこのトリガー。記録・再接続の間隔・通知は ConnectState）
         conn_state = ConnectState(TRIGGER_NAME, f"{server_ip}:{server_port}", reconnect_interval_sec, MODULE_NAME, log_file)
@@ -304,7 +307,7 @@ def f_socket_client_trigger(
             ))
             
             ## (3. Viz to Debug)
-            if VERBOSE:
+            if show_in_loop:
                 _timestamp  = dt.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]##
                 _dev_name = base.load_device_info()["dev_name"]##
                 sys.stdout.write(f"{count:<3} {_timestamp} {_dev_name} {value}\n")##

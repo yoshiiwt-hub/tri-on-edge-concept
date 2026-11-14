@@ -4,8 +4,8 @@
 """
 ########################################
 # Find Trigger Module [SLMP]
-# Ver: 02.j.20261110    By: IWATA, Y.'s Agent AI
-# Mod: 取り込んだ行の表示を画面だけにし（ログファイルには書かない）、全部の列を出す。末尾の ... を削除
+# Ver: 02.k.20261114    By: IWATA,Y.'s Agent AI
+# Mod: 毎ループの画面表示を、設定 show_in_loop（省略時 false）で出すかどうか選べるようにした
 ########################################
 MELSEC・キーエンス等の PLC から、SLMP でデバイス・ラベルの値を取り込む入口
 
@@ -141,7 +141,7 @@ def f_find_slmp_trigger(
 ) -> None:
     """
     MELSEC PLCをSLMPで監視し、条件成立時にデータをキューに流す
-    Mod: 2026.08.30    By: IWATA,Y.
+    Mod: 2026.11.14    By: IWATA,Y.'s Agent AI
 
     ■ flag_mode=True（デフォルト）
         トリガーフラグ（デバイス or ラベル）を監視し、trigger_valueと一致した時だけ
@@ -170,6 +170,9 @@ def f_find_slmp_trigger(
             連続 retry_max 回失敗したら、接続できない（not_connectable）と判定して ConnectState へ報告する（読めたら回数を 0 に戻す）
         再接続: 接続できない間は reconnect_interval_sec ごとに試み、結果を ConnectState へ報告する（その間は値を送らない）
         接続の状態（ConnectState が登録。FIND_SLMP）: connect_state / not_connectable_since / reconnect_fail_count / total_not_connectable
+
+    ■ 画面表示
+        show_in_loop が true なら、取り込んだ行（Queued）を毎回画面に出す（ログファイルには書かない）。省略時は false
     """
     TRIGGER_NAME = "f_find_slmp_trigger"
 
@@ -266,12 +269,13 @@ def f_find_slmp_trigger(
 
         """ ポーリング設定 """
         polling_sec = int(config.get("polling_ms", 100)) / 1000
+        show_in_loop = bool(config.get("show_in_loop", False))   # true で毎ループの表示を画面に出す
 
         base.output_log(MODULE_NAME,
             f"{TRIGGER_NAME} plc={plc_host}:{plc_port} flag_mode={flag_mode} "
             f"n_bulk_specs={len(bulk_specs)} n_col_def={n_col_def} "
             f"polling_ms={polling_sec*1000:.0f} retry_max={retry_max} retry_wait_sec={retry_wait_sec} "
-            f"reconnect_interval_sec={reconnect_interval_sec}",
+            f"reconnect_interval_sec={reconnect_interval_sec} show_in_loop={show_in_loop}",
             log_file)
 
     except Exception as e:
@@ -421,7 +425,8 @@ def f_find_slmp_trigger(
                 row[col_idx] = col_func(bulk_buffers)
             queue_out.put((count, row))
             fail_count = 0   # 読めたら連続失敗の回数を 0 に戻す
-            base.output_log(MODULE_NAME, f"{TRIGGER_NAME} Queued #{count}: {row}")   # 正常は画面のみ（ログファイルには書かない）
+            if show_in_loop:
+                base.output_log(MODULE_NAME, f"{TRIGGER_NAME} Queued #{count}: {row}")   # 正常は画面のみ（ログファイルには書かない）
             count += 1
 
             _responsive_wait(polling_sec)
