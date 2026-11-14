@@ -4,8 +4,9 @@
 """
 ########################################
 # Single Run Test [Find Trigger: FTP]
-# Ver: 01.b.20261027    By: IWATA, Y.'s Agent AI
-# Mod: 1ファイルごとの正常なログが画面のみ（ログファイルに書かない）ことのテストを追加。
+# Ver: 01.c.20261114    By: IWATA,Y.'s Agent AI
+# Mod: 停止の指示から、トリガーと FTP サーバーのスレッドが 2 秒以内に終わり、同じポートで再び起動できることのテストを追加。
+#      1ファイルごとの正常なログが画面のみ（ログファイルに書かない）ことのテストを追加。
 #      新規作成（受信後のリネームで pfx_sfx に該当するようになったファイルの処理）
 ########################################
 f_find_ftp_trigger を localhost の空きポートで起動し、標準ライブラリの ftplib でアップロード・リネームして
@@ -19,6 +20,7 @@ f_find_ftp_trigger を localhost の空きポートで起動し、標準ライ�
       5. 失敗したリネーム（存在しないファイル）とディレクトリのリネームでは何も送られないこと
       6. 1ファイルごとの正常なログ（File received / File renamed / not matched, skip / Queued）は画面のみで、
          ログファイルには書かないこと（base.output_log に log_file を渡さない）
+      7. 停止の指示から、トリガーと FTP サーバーのスレッドが 2 秒以内に終わり、同じポートで再び起動できること
 
 実行: tri_s10_stream/ で  python -m unittest _test.test_s11_find_ftp -v
 """
@@ -179,6 +181,25 @@ class TestFindFtpRename(unittest.TestCase):
             hits = [(m, f) for m, f in logs if m.startswith(head)]
             self.assertTrue(hits, (head, logs))
             self.assertFalse([f for _, f in hits if f], (head, hits))   # log_file を渡さない（画面のみ）
+
+    def test_stop_is_quick_and_server_thread_ends(self):
+        srv = [th for th in threading.enumerate() if th.name == "f_find_ftp_trigger_server" and th.is_alive()]
+        self.assertEqual(len(srv), 1)
+        t0 = time.time()
+        self._stop()                                            # クライアントがつないだままでも止まる
+        self.assertLess(time.time() - t0, 2.0)
+        self.assertFalse(self.thread.is_alive())
+        self.assertFalse(srv[0].is_alive())                     # サーバーのスレッドが残らない
+
+        from src.comm_ftp.tri_s11_find_ftp import f_find_ftp_trigger
+        self.out_queue, self.stop_event = queue.Queue(), threading.Event()
+        self.thread = threading.Thread(target=f_find_ftp_trigger,
+                                       args=(self.out_queue, COL_DEF, self.config, self.stop_event),
+                                       daemon=True)
+        self.thread.start()                                     # 同じポートで再び起動（後片付けは setUp の _stop）
+        self.ftp = self._connect()
+        self._upload("again.csv")
+        self.assertEqual(self._queued_names(), ["again.csv"])
 
 
 if __name__ == "__main__":

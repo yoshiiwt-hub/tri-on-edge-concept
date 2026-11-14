@@ -4,8 +4,8 @@
 """
 ########################################
 # Find Trigger Module [FTP Server]
-# Ver: 01.i.20261108    By: IWATA, Y.'s Agent AI
-# Mod: pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string を削除。動作は変えない）
+# Ver: 01.j.20261114    By: IWATA,Y.'s Agent AI
+# Mod: 停止を速くし、サーバーのスレッドが残らないようにした（サーバーは専用のスレッドで回して、同じスレッドで閉じる）
 ########################################
 装置が FTP で送ってくるファイルを、エッジ側の FTP サーバーで受け取って取り込む入口
 
@@ -96,7 +96,7 @@ def f_find_ftp_trigger(
 ) -> None:
     """
     FTPサーバでファイルを受信し、ファイルパスをキューに流す
-    Mod: 2026.06.12    By: IWATA,Y.
+    Mod: 2026.11.14    By: IWATA,Y.'s Agent AI
     """
     TRIGGER_NAME = "f_find_ftp_trigger"
 
@@ -193,6 +193,7 @@ def f_find_ftp_trigger(
 
     server: Optional[FTPServer] = None
     server_thread: Optional[threading.Thread] = None
+    srv_stop = threading.Event()                        # FTP サーバーを止める合図（CLEANUP で立てる）
 
     try:
         authorizer = DummyAuthorizer()
@@ -205,8 +206,17 @@ def f_find_ftp_trigger(
         
         server = FTPServer((ftp_host, ftp_port), _TriEdgeFTPHandler)
 
+        def _serve() -> None:
+            """FTP サーバーを回し、srv_stop が立ったら同じスレッドで閉じる
+            （別のスレッドから close_all() を呼んでも serve_forever() は抜けないため）"""
+            try:
+                while not srv_stop.is_set():
+                    server.serve_forever(timeout=0.5, blocking=False, handle_exit=False)
+            finally:
+                server.close_all()
+
         server_thread = threading.Thread(
-            target=server.serve_forever,
+            target=_serve,
             daemon=True,
             name=f"{TRIGGER_NAME}_server",
         )
@@ -325,16 +335,13 @@ def f_find_ftp_trigger(
             continue
 
     """======== CLEANUP ========"""
-    if server is not None:
-        try:
-            server.close_all()
-            base.output_log(MODULE_NAME,
-                f"{TRIGGER_NAME} FTP Server stopped.", log_file)
-        except Exception:
-            pass
-
     if server_thread is not None:
+        srv_stop.set()
         server_thread.join(timeout=5.0)
+        if server_thread.is_alive():
+            base.output_log(MODULE_NAME, f"{TRIGGER_NAME} FTP Server did not stop in 5 sec.", log_file)
+        else:
+            base.output_log(MODULE_NAME, f"{TRIGGER_NAME} FTP Server stopped.", log_file)
 
     base.output_log(MODULE_NAME, f"{TRIGGER_NAME} Stop.", log_file)
     return None
