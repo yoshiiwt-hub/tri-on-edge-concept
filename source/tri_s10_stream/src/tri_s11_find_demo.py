@@ -4,8 +4,8 @@
 """
 ########################################
 # Find Trigger Module [Demo]
-# Ver: 06.g.20261108    By: IWATA, Y.'s Agent AI
-# Mod: pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string を削除。動作は変えない）
+# Ver: 06.h.20261114    By: IWATA,Y.'s Agent AI
+# Mod: 毎ループの画面表示を、設定 show_in_loop（省略時 false）で出すかどうか選べるようにした
 ########################################
 実機が無くても TriEdge の動作を確かめられるよう、デモ用のデータを流す
 
@@ -98,7 +98,9 @@ def f_demo_random_trigger(
 ) -> None:
     """
     デモ）乱数を生成してキューに送信
-    Mod: 2026.03.31    By: IWATA,Y.
+    Mod: 2026.11.14    By: IWATA,Y.'s Agent AI
+
+    [画面表示] show_in_loop: true で、送った値を毎回画面に出す（ログファイルには書かない）。省略時は false
     """
     TRIGGER_NAME = "f_demo_random_trigger"
 
@@ -110,6 +112,8 @@ def f_demo_random_trigger(
         float_range = config.get("float_range", [0, 100])
         float_round = config.get("float_round", 2)
         str_list    = config.get("str_list", ["ABC", "DEF", "XYZ"])
+        show_in_loop = bool(config.get("show_in_loop", False))   # true で毎ループの表示を画面に出す（ログファイルには書かない）
+        base.output_log(MODULE_NAME, f"{TRIGGER_NAME} show_in_loop={show_in_loop}", log_file)
         
         """定義から key, dtype を取得"""
         dtype_actual = [col_def[k][1] for k in sorted(col_def.keys())]
@@ -139,10 +143,11 @@ def f_demo_random_trigger(
                 )
             )
             ## (Viz to Debug)
-            _timestamp  = dt.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]##
-            _dev_name = base.load_device_info()["dev_name"]##
-            sys.stdout.write(f"{count:<3}  {_timestamp}  {_dev_name}  {value}\n")##
-            sys.stdout.flush()##
+            if show_in_loop:
+                _timestamp  = dt.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]##
+                _dev_name = base.load_device_info()["dev_name"]##
+                sys.stdout.write(f"{count:<3}  {_timestamp}  {_dev_name}  {value}\n")##
+                sys.stdout.flush()##
             
             count += 1
             time.sleep(0.5)
@@ -166,7 +171,9 @@ def f_demo_csv_trigger(
 ) -> None:
     """
     デモ）CSVを読み込んでキューに送信
-    Mod: 2026.04.19    By: IWATA,Y.
+    Mod: 2026.11.14    By: IWATA,Y.'s Agent AI
+
+    [画面表示] show_in_loop: true で、送った行を毎回画面に出す（波形のバー。ログファイルには書かない）。省略時は false
     """
     TRIGGER_NAME = "f_demo_csv_trigger"
 
@@ -178,6 +185,8 @@ def f_demo_csv_trigger(
         file_path = config.get("file_path")
         encode = config.get("encode", "utf-8")
         interval = config.get("interval", 0.1)
+        show_in_loop = bool(config.get("show_in_loop", False))   # true で毎ループの表示を画面に出す（ログファイルには書かない）
+        base.output_log(MODULE_NAME, f"{TRIGGER_NAME} show_in_loop={show_in_loop}", log_file)
         
         # dtype cast plan
         default_val_config = {
@@ -235,12 +244,13 @@ def f_demo_csv_trigger(
             )
             
             # 波形の画面表示（確認用）##
-            _timestamp  = dt.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-            _dev_name = base.load_device_info()["dev_name"]
-            _key_show = value[1]
-            _val_show = int(value[2] / 2) + 55
-            sys.stdout.write(f"{count:<3} Time:{_timestamp} EQP:{_dev_name} Prod:{_key_show} Val:{_val_show:<3} {'#' * _val_show}\n")##
-            sys.stdout.flush()##
+            if show_in_loop:
+                _timestamp  = dt.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+                _dev_name = base.load_device_info()["dev_name"]
+                _key_show = value[1]
+                _val_show = int(value[2] / 2) + 55
+                sys.stdout.write(f"{count:<3} Time:{_timestamp} EQP:{_dev_name} Prod:{_key_show} Val:{_val_show:<3} {'#' * _val_show}\n")##
+                sys.stdout.flush()##
             
             count += 1
             time.sleep(interval)

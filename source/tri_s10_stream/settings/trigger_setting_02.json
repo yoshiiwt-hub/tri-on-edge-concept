@@ -15,6 +15,17 @@
     , "act_trigger": {
           "module": "src.tri_s12_act_tmpl_queue"
         , "func"  : "a_template_imq_trigger"
+
+        , "##": "---- オンデマンド Teams 通知 ----"
+        , "##": "セグメントの処理ごとに、通知を要求するか（true / false）。省略時は true"
+        , "##": "false = メトリクスへの登録だけ。実際に送るかは Operator の teams_ondemand 設定による"
+        , "teams_notify" : true
+        , "##": "通知に載せる値の位置のリスト。省略時は []"
+        , "##": "  loc: 列（Find と同じ列番号。固定4列は seg_id などの名前）。範囲外は起動時エラー"
+        , "##": "  row: セグメント内の行（終点行を除いた後の0始まり。-1 = 最後の行）"
+        , "##": "例: [{\"loc\": 2, \"row\": 0}, {\"loc\": 2, \"row\": -1}]"
+        , "##": "    = 列2の最初と最後の値"
+        , "notify_values": [{"loc": 2, "row": 0}, {"loc": 2, "row": -1}]
     }
 
 }

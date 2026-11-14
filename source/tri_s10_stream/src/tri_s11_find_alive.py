@@ -4,8 +4,8 @@
 """
 ########################################
 # Find Trigger Module [Alive]
-# Ver: 01.b.20261102    By: IWATA, Y.'s Agent AI
-# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
+# Ver: 01.c.20261114    By: IWATA,Y.'s Agent AI
+# Mod: 毎ループの画面表示を、設定 show_in_loop（省略時 false）で出すかどうか選べるようにした（要約の行。VERBOSE の機器ごとの行は今のまま）
 ########################################
 現場の機器が通信できる状態か（死活）を定期的に確かめ、その結果をデータとして取り込む
 
@@ -236,7 +236,7 @@ def f_check_alive_trigger(
 ) -> None:
     """
     設定した機器へ TCP 接続を試み、死活（OK/NG）を1機器1行で送る（1周期ごとに区切り行 '____'）
-    Mod: 2026.10.08    By: IWATA, Y.'s Agent AI
+    Mod: 2026.11.14    By: IWATA,Y.'s Agent AI
 
     [動作の要点]（旧モジュール Docstring から移動）
         判定（method = "tcp"）:
@@ -246,6 +246,8 @@ def f_check_alive_trigger(
             NG のときは retry 回まで再試行し、1回でも OK なら OK とする
         送信: 結果を targets の設定順に1機器1行で送り、最後に区切り行（'____'）を送る（1周期 = 1セグメント）
               確認に周期より長くかかった場合は、終わり次第つぎの周期を始める
+        画面表示: show_in_loop が true なら、周期ごとの要約（Alive Checked. OK=.. NG=..）を画面に出す。省略時は false
+                  VERBOSE が true なら、機器ごとの結果も画面に出す（show_in_loop とは別に効く）
     """
     TRIGGER_NAME = "f_check_alive_trigger"
 
@@ -258,6 +260,7 @@ def f_check_alive_trigger(
     base.output_log(MODULE_NAME, f"{TRIGGER_NAME} Start.", log_file)
     try:
         VERBOSE = config.get("VERBOSE", False)
+        show_in_loop = bool(config.get("show_in_loop", False))   # true で周期ごとの要約を画面に出す
 
         """ Col Define """
         col_names = parse_alive_columns(col_def)
@@ -279,7 +282,8 @@ def f_check_alive_trigger(
 
         base.output_log(MODULE_NAME,
             f"targets={len(targets)}  method={method}  interval_sec={interval_sec}  timeout_sec={timeout_sec}"
-            f"  retry={retry}  refused_is_ok={refused_is_ok}  max_workers={max_workers}  columns={col_names}", log_file)
+            f"  retry={retry}  refused_is_ok={refused_is_ok}  max_workers={max_workers}  columns={col_names}"
+            f"  show_in_loop={show_in_loop}  VERBOSE={VERBOSE}", log_file)
         for t in targets:
             base.output_log(MODULE_NAME, f"  target: key={t['key']}  name={t['name']}  {t['host']}:{t['port']}", log_file)
 
@@ -313,7 +317,8 @@ def f_check_alive_trigger(
                 count += 1
 
                 n_ng = sum(1 for r in results if r["status"] != "OK")
-                base.output_log(MODULE_NAME, f"Alive Checked. OK={len(results) - n_ng}  NG={n_ng}")
+                if show_in_loop:
+                    base.output_log(MODULE_NAME, f"Alive Checked. OK={len(results) - n_ng}  NG={n_ng}")
                 if VERBOSE:
                     for r in results:
                         sys.stdout.write(f"  {r['status']:<2} {r['device_key']} ({r['device_name']}) "
