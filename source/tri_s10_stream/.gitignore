@@ -32,6 +32,7 @@
 !/src/comm_ftp/
 /src/comm_ftp/*
 !/src/comm_ftp/tri_s11_find_ftp.py
+!/src/comm_ftp/tri_s11_find_ftp_csv.py
 !/src/comm_ftp/tri_s12_act_ftp.py
 
 !/src/comm_mqtt/
@@ -102,6 +103,7 @@
 !/_test/test_s10_stream_stat_judge.py
 !/_test/test_s11_find_driver.py
 !/_test/test_s11_find_ftp.py
+!/_test/test_s11_find_ftp_csv.py
 !/_test/test_s12_act_driver.py
 !/_test/test_s12_act_socket_log.py
 !/_test/test_s12_act_tmpl_queue_stats.py
