@@ -4,8 +4,8 @@
 """
 ########################################
 # Stream Core Module
-# Ver: 08.g.20261108    By: IWATA, Y.'s Agent AI
-# Mod: pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string を削除。動作は変えない）
+# Ver: 08.h.20261116    By: IWATA,Y.
+# Mod: debug mode 対応
 ########################################
 Find（入力）と Act（出力）をつなぎ、データをセグメント単位で受け渡す Stream 領域の中核
 
@@ -21,16 +21,16 @@ _supervise_error_events # Find・Act スレッドのエラーを監視し、停�
 MODULE_NAME = "STREAM"
 
 """standard library"""
-from   datetime    import datetime as dt
+from   datetime   import datetime as dt
 import importlib
 import os
-from   pathlib     import Path
+from   pathlib    import Path
 import queue
 import sys
 import threading
 import time
 import traceback
-from   typing      import Any, Dict, List, Tuple, Sequence, Optional
+from   typing     import Any, Dict, List, Tuple, Sequence, Optional
 
 """external library"""
 ## NOT Use
@@ -74,8 +74,8 @@ except ModuleNotFoundError:
 
 """local module"""
 from   src.tri_s01_error_if import ErrorIF, SIGNAL_STOP
+import src.tri_s01_storage_queue      as stq
 import src.tri_s10_stream_wave_cutout as cutout
-import src.tri_s01_storage_queue    as stq
 
 """system dir, file"""
 system_root = base.get_system_root()
@@ -91,10 +91,11 @@ base.output_log(MODULE_NAME, f"log_file={log_file}", log_file)
 if __name__=='__main__':
     base.output_log(MODULE_NAME, f"work_dir={work_dir}", log_file)
 
-hb_file   = base.get_stream_hb_path()
-stop_file = base.get_ctrl_stop_stream_path()
+hb_file    = base.get_stream_hb_path()
+stop_file  = base.get_ctrl_stop_stream_path()
+debug_file = base.get_ctrl_state_debug_path()
 
-"""device info / setting file（main() 冒頭の _prepare_boot で読み込む）"""
+"""device info / setting file"""
 device_info: Dict[str, Any] = {}
 setting_01:  Dict[str, Any] = {}
 setting_02:  Dict[str, Any] = {}
@@ -103,19 +104,18 @@ setting_02:  Dict[str, Any] = {}
 ########################################
 # Main Loop Processing
 ########################################
+
 """Global Var"""
-# ※ ステージ状態（STAGE_TIMESTAMP / STAGE_COUNT）は tri_s10_stream_wave_cutout 側で持つ
-
 # Storage Queue Clean-up
-STQ_CLEANUP_LAST_TIME: float = time.time()
-STQ_CLEANUP_PROC_COUNT: int = 0
-STQ_CLEANUP_INTERVAL_SEC: float = 3600 # _prepare_boot で設定値に更新
-STQ_CLEANUP_INTERVAL_COUNT: int = 100  # _prepare_boot で設定値に更新
+STQ_CLEANUP_LAST_TIME: float    = time.time()
+STQ_CLEANUP_PROC_COUNT: int     = 0
+STQ_CLEANUP_INTERVAL_SEC: float = 3600
+STQ_CLEANUP_INTERVAL_COUNT: int = 100
 
-# Segment Summary（検出セグメントの定期集計。ログファイルには集計のみ残す）
-SEG_SUMMARY_INTERVAL_SEC: float = 3600 # _prepare_boot で設定値に更新
-SEG_SUMMARY_LAST_TIME: float = time.time()
-SEG_SUMMARY: Dict[str, Any] = {}
+# Segment Summary
+SEG_SUMMARY_INTERVAL_SEC: float = 3600
+SEG_SUMMARY_LAST_TIME: float    = time.time()
+SEG_SUMMARY: Dict[str, Any]     = {}
 
 
 """セグメント集計 関数群"""
@@ -160,19 +160,25 @@ def _seg_summary_emit() -> None:
     _seg_summary_reset()
 
 
-def _seg_summary_metrics(add_segments: int, add_dropped: int, add_forced: int, summary_time: str,
-                         segments: Any, rows: str, sec: str, q_max: Any) -> None:
+def _seg_summary_metrics(
+    add_segments: int,
+    add_dropped:  int, 
+    add_forced:   int,
+    summary_time: str,
+    segments:     Any,
+    rows:  str,
+    sec:   str,
+    q_max: Any
+) -> None:
     """segment集計値を運用系メトリクスへ登録"""
-    base.metrics_add(MODULE_NAME, "total_segments", add_segments)
+    base.metrics_add(MODULE_NAME, "total_segments"        , add_segments)
     base.metrics_add(MODULE_NAME, "total_dropped_segments", add_dropped)
-    base.metrics_add(MODULE_NAME, "total_forced_segments", add_forced)
-    base.metrics_set_last(MODULE_NAME, "last_summary_time", summary_time)
+    base.metrics_add(MODULE_NAME, "total_forced_segments" , add_forced)
+    base.metrics_set_last(MODULE_NAME, "last_summary_time"   , summary_time)
     base.metrics_set_last(MODULE_NAME, "last_period_segments", segments)
-    base.metrics_set_last(MODULE_NAME, "last_period_rows", rows)
-    base.metrics_set_last(MODULE_NAME, "last_period_sec", sec)
+    base.metrics_set_last(MODULE_NAME, "last_period_rows"    , rows)
+    base.metrics_set_last(MODULE_NAME, "last_period_sec"     , sec)
     base.metrics_set_last(MODULE_NAME, "last_period_act_queue_max", q_max)
-
-
 
 
 ########################################
@@ -181,19 +187,13 @@ def _seg_summary_metrics(add_segments: int, add_dropped: int, add_forced: int, s
 
 def _prepare_boot() -> None:
     """
-    起動準備（main() の冒頭で呼ぶ）。二重起動の確認・前回の停止ファイルの削除・端末情報と設定の読込を行う。
-    従来はモジュールの import 時に実行していたため、Operator がプロセス内で StreamCore を再起動しても
-    設定が読み直されず、二重起動時の KeyboardInterrupt も import 時に発生していた。
-    Mod: 2026.10.05    By: IWATA, Y.'s Agent AI（import 時の副作用を移動。A-6 / B-6）
-    Raises:
-        KeyboardInterrupt("Already Running"): ハートビートが更新中（他の StreamCore が稼働中）
-        SystemExit: 前回の停止ファイルを削除できない（従来どおりプロセスを終了する）
+    起動準備。二重起動の確認・前回の停止ファイルの削除・端末情報と設定の読込を行う。
     """
     global device_info, setting_01, setting_02
     global STQ_CLEANUP_LAST_TIME, STQ_CLEANUP_PROC_COUNT, STQ_CLEANUP_INTERVAL_SEC, STQ_CLEANUP_INTERVAL_COUNT
     global SEG_SUMMARY_INTERVAL_SEC
 
-    """二重起動の確認（ハートビートファイル）"""
+    """二重起動の確認"""
     if os.path.exists(hb_file):
         try:
             base.output_log(MODULE_NAME, "Hb_file Already Exists. Checking Current Heartbeat ...", log_file)
@@ -256,11 +256,10 @@ def _worker_wrapper(func, stop_event: threading.Event, trigger_id: str, *args, *
 
 def _unpack_input_item(item: Any) -> Optional[Tuple[int, Any, dt]]:
     """
-    Find がキューに入れた1件を (index, value, 時刻) にする（A-7）
-      (count, value)           : 時刻は Core の受信時刻 dt.now()（正常。ログ・ErrorIF への報告はしない）
-      (count, value, 取得時刻) : 取得時刻（datetime）を使う。datetime でない場合はデータ異常として報告し、dt.now() で続ける
-      それ以外（要素数の誤り等）: データ異常として報告し、None を返す（呼び出し側でそのレコードを捨てる）
-    Mod: 2026.10.25    By: IWATA, Y.'s Agent AI
+    Find がキューに入れた1件を (index, value, 時刻) にする
+    (count, value)         : 時刻は Core の受信時刻 dt.now()（正常。ログ・ErrorIF への報告はしない）
+    (count, value, 取得時刻) : 取得時刻（datetime）を使う。datetime でない場合はデータ異常として報告し、dt.now() で続ける
+    それ以外（要素数の誤り等）  : データ異常として報告し、None を返す（呼び出し側でそのレコードを捨てる）
     """
     if isinstance(item, (tuple, list)) and len(item) == 2:
         return item[0], item[1], dt.now()
@@ -289,24 +288,15 @@ def _unpack_input_item(item: Any) -> Optional[Tuple[int, Any, dt]]:
 
 
 def _check_stop_control_file(stop_file_path: str, stop_detect_count: int) -> int:
-    """
-    停止制御ファイル検出処理。2回連続検出で KeyboardInterrupt を送出
-    Args:
-        stop_file_path: 停止制御ファイルのパス
-        stop_detect_count: これまでの連続検出回数
-    Returns:
-        更新後の連続検出回数
-    Raises:
-        KeyboardInterrupt: 2回連続検出時
-    """
+    """停止制御ファイル検出処理。2回連続検出でアクションを実行"""
     if os.path.exists(stop_file_path):
         stop_detect_count += 1
         if stop_detect_count >= 2:
-            base.output_log(MODULE_NAME, f"Stop File Detected ({stop_file_path}). Initiating Gentle Stop...", log_file)
+            base.output_log(MODULE_NAME, f"Stop File Detected. Initiating Gentle Stop...  stop_file_path={stop_file_path}", log_file)
             try:
                 os.remove(stop_file_path)
             except Exception as e:
-                base.output_log(MODULE_NAME, f"Warning: Failed to Remove Stop File: {e}", log_file)
+                base.output_log(MODULE_NAME, f"Warning: Failed to Remove Stop File: {e}  stop_file_path={stop_file_path}", log_file)
             raise KeyboardInterrupt("Stopped by Control File")
     else:
         stop_detect_count = 0
@@ -314,11 +304,32 @@ def _check_stop_control_file(stop_file_path: str, stop_detect_count: int) -> int
     return stop_detect_count
 
 
+def _check_debug_control_file(debug_file_path: str, debug_detect_count: int) -> int:
+    """デバッグ制御ファイル検出処理。2回連続検出でアクションを実行"""
+    if os.path.exists(debug_file_path):
+        debug_detect_count += 1
+        if debug_detect_count >= 2 and not base.get_mode_is_debug():
+            base.output_log(MODULE_NAME, f"Debug File Detected. Initiating Debug Mode...  debug_file_path={debug_file_path}", log_file)
+            try:
+                base._set_mode_is_debug(True)
+            except Exception as e:
+                base.output_log(MODULE_NAME, f"Warning: Failed to Set Debug Mode: {e}  debug_file_path={debug_file_path}", log_file)
+    else:
+        debug_detect_count = 0
+
+        if base.get_mode_is_debug():
+            base.output_log(MODULE_NAME, f"Debug File NOT Detected. Resetting Debug Mode...  debug_file_path={debug_file_path}", log_file)
+            try:
+                base._set_mode_is_debug(False)
+            except Exception as e:
+                base.output_log(MODULE_NAME, f"Warning: Failed to Reset Debug Mode: {e}  debug_file_path={debug_file_path}", log_file)
+
+    return debug_detect_count
+
+
 def _supervise_error_events() -> None:
     """
     エラーキュー回収・監督処理
-    Raises:
-        KeyboardInterrupt: supervisor_action が "shutdown_streamcore" または "stop_operator" の場合
     """
     events = ErrorIF.drain_events()
     for ev in events:
@@ -361,10 +372,10 @@ def _supervise_error_events() -> None:
 def main() -> None:
     """
     メイン処理（起動準備、ワーカー起動、ループ監視、ループ後処理）
-    Mod: 2026.10.05    By: IWATA, Y.'s Agent AI（起動準備 _prepare_boot を冒頭で実行。QMODE の起動時検証。A-6 / B-6 / B-3）
+    Mod: 2026.11.16    By: IWATA,Y.
     """
     """======== BOOT ========"""
-    _prepare_boot()# 二重起動時は KeyboardInterrupt("Already Running") を Operator へ伝える
+    _prepare_boot()
 
     try:
         """======== CONFIG ========"""
@@ -500,11 +511,11 @@ def main() -> None:
     prev_status: Optional[int] = 0
     seg_range = [None, None]
 
-    # JSONの単一形式/多段形式を内部仕様 {stages:[...]} にラップ（tri_s10_stream_wave_cutout）
+    # JSONの単一形式/多段形式を内部仕様 {stages:[...]} にラップ
     start_spec = cutout.wrap_spec(monitor_config.get("seg_start", {}))
     end_spec   = cutout.wrap_spec(monitor_config.get("seg_end",   {}))
     
-    # ステージローカル開始時刻・評価回数カウンタの初期化（状態は tri_s10_stream_wave_cutout 側で持つ）
+    # ステージローカル開始時刻・評価回数カウンタの初期化
     cutout.init_state(start_spec, end_spec, _seg_max_rows, _seg_max_sec)
     
     """点種別判定 1:開始点 2:中間点 3:終点 0:非波形"""
@@ -521,11 +532,13 @@ def main() -> None:
     loop_counter = 0
     last_heartbeat_time = 0.0
     stop_detect_count = 0
-    last_stop_check = time.time()
+    last_stop_check   = time.time()
+    debug_detect_count = 0
+    last_debug_check   = time.time()
     seg_id = 0
     seg_ind = 0
     _seg_summary_reset()
-    _seg_summary_metrics(0, 0, 0, "-", "-", "-", "-", "-")# 最初の集計前から Teams 等に STREAM 欄を表示させるための初期値
+    _seg_summary_metrics(0, 0, 0, "-", "-", "-", "-", "-")
     base.output_log(MODULE_NAME, f"seg_summary_interval_sec={SEG_SUMMARY_INTERVAL_SEC}", log_file)
 
     # Prepare Storage Queue DB
@@ -548,16 +561,14 @@ def main() -> None:
     def _on_cutout_segment(seg_copy: List[List[Any]], seg_id: int, seg_ind: int, forced: bool = False) -> None:
         """
         セグメントが切り出されたときに tri_s10_stream_wave_cutout から呼ばれる関数（コールバック）
-        集計 → 終点行の除外（CUT_LAST_ROW） → STQ 登録 → キュー送信（満杯時は破棄を記録）→ STQ 掃除 を行う
-        forced=True は上限（seg_max_rows / seg_max_sec）による強制クローズ（終点行が無いため除外しない。件数を集計）
-        Mod: 2026.10.04    By: IWATA, Y.'s Agent AI（CUT_LAST_ROW による終点行の除外を追加。B-2）
+        Mod: 2026.10.04    By: IWATA,Y.'s Agent AI
         """
         global STQ_CLEANUP_LAST_TIME, STQ_CLEANUP_PROC_COUNT
         post_queue = act_queue
         if stq_conf:
             conn, sql_i, sql_d, sql_err_cnt, sql_err_clr = stq_conf
 
-        _seg_summary_add(seg_copy)# 集計は切り出したセグメント（終点行を含む）で行う
+        _seg_summary_add(seg_copy)
         if forced:
             SEG_SUMMARY["forced"] += 1
 
@@ -604,7 +615,7 @@ def main() -> None:
             ErrorIF.report_event({
                 "trigger_id": MODULE_NAME,
                 "phase":      "loop",
-                "category":   "io",# 宛先が受け取れない＝入出力側（A-17）
+                "category":   "io",
                 "exc_type":   "QueueFull",
                 "message":    "Post Queue Full. Segment Dropped.",
             })
@@ -651,8 +662,16 @@ def main() -> None:
                 
                 # Check Stop File
                 stop_detect_count = _check_stop_control_file(stop_file, stop_detect_count)
-            
-            """Record Heartbeat"""#### TBD（OSのRAM（tmpfs）を使用）####
+
+            """Check Control File to Debug Mode"""
+            last_debug_check_sec = current_time - last_debug_check
+            if last_debug_check_sec >= CTRL_CHECK_INTERVAL_SEC:
+                last_debug_check = current_time
+                
+                # Check Debug File
+                debug_detect_count = _check_debug_control_file(debug_file, debug_detect_count)
+                
+            """Record Heartbeat"""
             last_heartbeat_sec = current_time - last_heartbeat_time
             if last_heartbeat_sec >= HEARTBEAT_INTERVAL_SEC:
                 last_heartbeat_time = current_time
@@ -674,7 +693,7 @@ def main() -> None:
             """ 1. Receive Input Queue """
             try:
                 _item = input_queue.get(timeout=0.1)
-                _unpacked = _unpack_input_item(_item)  # (count, value) / (count, value, 取得時刻)（A-7）
+                _unpacked = _unpack_input_item(_item)
                 if _unpacked is None:
                     continue  # 形が不正（報告済み）
                 (
@@ -682,10 +701,6 @@ def main() -> None:
                     value,     # Val (list/tuple)
                     timestamp  # 取得時刻（Find が渡した場合）または Core の受信時刻
                 ) = _unpacked
-                #### for debug ####
-                if False:##
-                    sys.stdout.write(f'[from find]  index={index}  value={value}\n')#\n\r##
-                    sys.stdout.flush()##
                 
             except queue.Empty:
                 loop_counter += 1
@@ -694,16 +709,20 @@ def main() -> None:
 
             """ 2. Format Data Buffer """
             record = [
-                timestamp,  # 取得時刻 or Core の受信時刻。seg_ts・seg_id・seg_max_sec の判定に使う（A-7）
+                timestamp,  # 取得時刻 or Core の受信時刻。seg_ts・seg_id・seg_max_sec の判定に使う
                 index + 1,  # Start in 1
                 list(value) # Val (to list)
             ]
-            #### for debug ####
-            if False:##
-                sys.stdout.write(f'\r[formated]  record={type(record)}  {len(record)}  {record}\n')
-                sys.stdout.flush()##
             
             """ 3. Call Segment Process Function """
+            # show in loop (only debug mode)
+            if base.get_mode_is_debug():
+                sys.stdout.write(f'loop_counter={loop_counter}  timestamp={timestamp}  index={index}  prev_status={prev_status}\n')
+                sys.stdout.write(f'seg_id={seg_id}  seg_ind={seg_ind}  seg_range={seg_range}\n')
+                if prev_values: sys.stdout.write(f'prev_rec  type={type(prev_values)}  len={len(prev_values)}  val={prev_values}\n')
+                if value      : sys.stdout.write(f'curr_rec  type={type(value)}  len={len(value)}  val={value}\n\n')
+                sys.stdout.flush()
+            
             (
                 seg_id,   #out to next in
                 seg_ind,  #out to next in
@@ -724,16 +743,7 @@ def main() -> None:
                 cond_progress,
                 _ts_round_ms
             )
-            #### for debug ####
-            if False:##
-                sys.stdout.write(f'\rloop_counter={loop_counter}  seg_range={seg_range}  seg_id={seg_id}  prev_status={prev_status}  prev_values={prev_values}\n')##
-                sys.stdout.flush()##
-            if False:##
-                _to_see_loc = 2 ##
-                if prev_status in (1, 2, 3):##
-                    sys.stdout.write(f'{prev_values[_to_see_loc]}  {"#"*min(320, int(prev_values[_to_see_loc]))}\n')##
-                    sys.stdout.flush()##
-            
+
             loop_counter += 1
             if MAX_LOOP_COUNT <= loop_counter:
                 loop_counter = 0
