@@ -4,14 +4,15 @@
 """
 ########################################
 # Act Trigger Module [SQLite Store]
-# Ver: 02.c.20261102    By: IWATA, Y.'s Agent AI
-# Mod: モジュール冒頭の Docstring を規約に合わせて簡素化
+# Ver: 02.d.20261116    By: IWATA,Y.'s Agent AI
+# Mod: 死活監視の結果を機器ごとに最新の1行で保つ a_upsert_alive_to_sqlite_trigger を追加
 ########################################
 セグメントの値や統計量を、エッジ上の SQLite に蓄積する出口
 
 主要関数:
 a_store_seg_trigger    # セグメントの全行を SQLite に保存する。
 a_store_stats_trigger  # セグメントの統計量を求め、SQLite に保存する。
+a_upsert_alive_to_sqlite_trigger  # tri_s11_find_alive の結果を、機器ごとに1行の専用テーブルへ UPSERT し、状態の変化を通知する。
 _run_store_trigger     # 2つの trigger の共通ループ（保存する内容とテーブルの構造だけが異なる）。
 
 位置づけ: 上位の DB が無い・つながらない環境で、エッジ上にデータを貯める。統計量の算出は tri_s10_stream_wave_stat を使う。
@@ -357,6 +358,342 @@ def a_store_stats_trigger(
 
 a_store_stats_trigger.QMODE = "imq"
 a_store_stats_trigger.CUT_LAST_ROW = True  # 終点行（変化後）を core が除外して渡す
+
+
+########################################
+# 死活監視の結果（tri_s11_find_alive）を機器ごとに最新の1行で保つ
+# （列・行の作り方・通知文は tri_s12_act_rdb_alive と同じ考え方。pg8000 を使わないよう、SQLite 用にここに置く）
+########################################
+
+ALIVE_TABLE_DEFAULT = "triedge_device_alive"
+ALIVE_SEPARATOR     = "____"
+
+# 専用テーブルの列（列名, SQLite の型）。device_key が主キー。updated_at は Act が付ける
+ALIVE_TABLE_COLUMNS: List[Tuple[str, str]] = [
+    ("device_key" , "TEXT"),
+    ("device_name", "TEXT"),
+    ("status"     , "TEXT"),
+    ("checked_at" , "TEXT"),
+    ("host"       , "TEXT"),
+    ("port"       , "INTEGER"),
+    ("rtt_ms"     , "REAL"),
+    ("detail"     , "TEXT"),
+    ("updated_at" , "TEXT"),
+]
+ALIVE_INPUT_COLUMNS  = [c for c, _ in ALIVE_TABLE_COLUMNS if c != "updated_at"]
+ALIVE_INPUT_REQUIRED = ("device_key", "status")
+
+
+def _alive_input_loc(col_def: Dict[int, Any]) -> Dict[str, int]:
+    """受け取る列の名前 → 位置（col_def のインデックス）。device_key・status が無ければ ValueError（起動時に1回）"""
+    loc: Dict[str, int] = {}
+    for k in sorted(col_def.keys()):
+        name = str(col_def[k][0])
+        if name in ALIVE_INPUT_COLUMNS and name not in loc:
+            loc[name] = int(k)
+    missing = [n for n in ALIVE_INPUT_REQUIRED if n not in loc]
+    if missing:
+        raise ValueError(f"column に必須の列がありません: {missing}  （受け取る列: {ALIVE_INPUT_COLUMNS}）")
+    return loc
+
+
+def _ensure_alive_table(conn: sqlite3.Connection, table_name: str) -> bool:
+    """
+    専用テーブルが無ければ作る。あれば列と device_key 単独の一意性（主キー・UNIQUE）を確かめ、合わなければ ValueError
+    （既存のテーブルは変えない）
+    Mod: 2026.11.16    By: IWATA,Y.'s Agent AI
+    Returns: True: 新規作成 / False: 既存
+    """
+    cols = conn.execute(f'PRAGMA table_info("{table_name}")').fetchall()
+    if not cols:
+        col_defs = ", ".join(f'"{c}" {t}' + (" PRIMARY KEY" if c == "device_key" else "") for c, t in ALIVE_TABLE_COLUMNS)
+        conn.execute(f'CREATE TABLE IF NOT EXISTS "{table_name}" ({col_defs})')
+        conn.commit()
+        return True
+
+    errors: List[str] = []
+    have = {str(r[1]): str(r[2]).upper() for r in cols}      # 列名 → 型
+    for c, t in ALIVE_TABLE_COLUMNS:
+        if c not in have:
+            errors.append(f"列 {c} がありません")
+        elif have[c] != t:
+            errors.append(f"列 {c} の型が {have[c]} です（{t} が必要）")
+    pk = [str(r[1]) for r in cols if int(r[5]) > 0]
+    unique_on_key = (pk == ["device_key"])
+    for idx in conn.execute(f'PRAGMA index_list("{table_name}")').fetchall():
+        if int(idx[2]) == 1 and (len(idx) < 5 or int(idx[4]) == 0):   # unique かつ部分インデックスでない
+            idx_cols = [str(r[2]) for r in conn.execute(f'PRAGMA index_info("{idx[1]}")').fetchall()]
+            if idx_cols == ["device_key"]:
+                unique_on_key = True
+    if not unique_on_key:
+        errors.append("device_key 単独の主キー（PRIMARY KEY）または一意性（UNIQUE）がありません（UPSERT に必要）")
+    if errors:
+        raise ValueError(f"死活監視テーブルの定義が合いません。テーブルは変更しないため、直すか別の table_name を指定してください。"
+                         f"  table={table_name}  errors={errors}")
+    return False
+
+
+def _alive_record(row: List[Any], loc: Dict[str, int], now: dt) -> Optional[Dict[str, Any]]:
+    """セグメントの1行から、テーブルに入れる値の dict を作る（区切り行・device_key が空の行は None）"""
+    def _get(name: str) -> Any:
+        i = loc.get(name)
+        if i is None or i >= len(row):
+            return None
+        v = row[i]
+        return None if v == ALIVE_SEPARATOR else v
+
+    key = _get("device_key")
+    if key is None or str(key).strip() == "":
+        return None
+
+    checked_at = _get("checked_at")
+    if isinstance(checked_at, str):
+        try:
+            checked_at = dt.fromisoformat(checked_at)
+        except ValueError:
+            pass                                              # 読めない文字列はそのまま入れる
+    try:
+        port = None if _get("port") is None else int(_get("port"))
+    except (TypeError, ValueError):
+        port = None
+    try:
+        rtt_ms = None if _get("rtt_ms") is None else float(_get("rtt_ms"))
+    except (TypeError, ValueError):
+        rtt_ms = None
+
+    def _str(name: str) -> Optional[str]:
+        v = _get(name)
+        return None if v is None else str(v)
+
+    return {
+        "device_key" : str(key),
+        "device_name": _str("device_name"),
+        "status"     : _str("status"),
+        "checked_at" : checked_at,
+        "host"       : _str("host"),
+        "port"       : port,
+        "rtt_ms"     : rtt_ms,
+        "detail"     : _str("detail"),
+        "updated_at" : now,
+    }
+
+
+def _alive_change_message(rec: Dict[str, Any], prev: Optional[str], time_format: str) -> Optional[str]:
+    """
+    状態が変わった機器の通知文を返す（変わっていなければ None）。前回の状態が無い機器（初回）は NG のときだけ通知する
+    例: 「機器３（dev03）：OK → NG（2026-10-08 10:00:00、timeout）」
+    """
+    new = rec.get("status")
+    if prev is None:
+        if new != "NG":
+            return None
+    elif prev == new:
+        return None
+    checked_at = rec.get("checked_at")
+    if isinstance(checked_at, dt):
+        when = checked_at.strftime(time_format)
+    else:
+        when = "-" if checked_at is None else str(checked_at)
+    name = rec.get("device_name") or rec["device_key"]
+    return (f"{name}（{rec['device_key']}）：{prev if prev is not None else '-'} → {new}"
+            f"（{when}、{rec.get('detail') or '-'}）")
+
+
+def _set_alive_metrics(states: Dict[str, Optional[str]], names: Dict[str, str], last_checked_at: Any) -> None:
+    """機器ごとの状態から運用系メトリクス（台数・NG 台数・NG の機器・最後に確認した日時）を更新する"""
+    ng_keys = [k for k, s in states.items() if s != "OK"]
+    base.metrics_set_last(MODULE_NAME, "devices_total", len(states))
+    base.metrics_set_last(MODULE_NAME, "ng_count", len(ng_keys))
+    ng_list = ", ".join(names.get(k) or k for k in ng_keys)
+    if len(ng_list) > 500:
+        ng_list = ng_list[:500] + "..."
+    base.metrics_set_last(MODULE_NAME, "ng_devices", ng_list if ng_list else "-")
+    if isinstance(last_checked_at, dt):
+        last_checked_at = last_checked_at.strftime("%Y-%m-%d %H:%M:%S")
+    base.metrics_set_last(MODULE_NAME, "last_checked_at", "-" if last_checked_at is None else str(last_checked_at))
+
+
+def a_upsert_alive_to_sqlite_trigger(
+    post_queue: queue.Queue,
+    col_def:    Dict[int, Any],
+    config:     Dict[str, Any],
+    stop_event: threading.Event,
+) -> None:
+    """
+    Find Alive の結果（1周期 = 1セグメント）を SQLite の専用テーブルへ UPSERT し、状態が変わった機器をオンデマンド通知する
+    Mod: 2026.11.16    By: IWATA,Y.'s Agent AI
+
+    [専用テーブル（列は固定。tri_s12_act_rdb_alive と同じ列）]
+        device_key TEXT PRIMARY KEY / device_name TEXT / status TEXT（OK / NG）/ checked_at TEXT /
+        host TEXT / port INTEGER / rtt_ms REAL（NG のときは NULL）/ detail TEXT / updated_at TEXT（更新した日時）
+        既存のテーブルは、列と device_key 単独の一意性を確かめる（合わなければ変更せずに起動時に止まる）
+    受け取る列（列名で取り出す。device_key・status は必須、ほかは無ければ NULL）
+        device_key, device_name, status, checked_at, host, port, rtt_ms, detail
+    [設定]
+        db_path（既定 output/alive.db）/ table_name（既定 triedge_device_alive）/
+        teams_notify（既定 true）/ notify_time_format（既定 %Y-%m-%d %H:%M:%S）
+    [動作の要点]
+        区切り行・device_key が空の行は書かない。同じ機器が複数行あれば後の行を使う
+        機器ごとに SAVEPOINT で区切って UPSERT し（1行の失敗で他の行を失わない）、セグメントで1回コミットする
+        前回の状態は起動時にテーブルから読み、メモリに持つ。OK と NG が入れ替わったとき（初回は NG のとき）だけ通知する
+    """
+    TRIGGER_NAME = "a_upsert_alive_to_sqlite_trigger"
+
+    """======== STARTUP ========"""
+    conn: Optional[sqlite3.Connection] = None
+    try:
+        loc = _alive_input_loc(col_def)
+        base.output_log(MODULE_NAME, f"input columns (name -> loc): {loc}", log_file)
+
+        db_path = base.get_absolute_path(str(config.get("db_path", "output/alive.db")))
+        db_dir = os.path.dirname(db_path)
+        if db_dir:
+            os.makedirs(db_dir, exist_ok=True)
+        table_name = str(config.get("table_name", ALIVE_TABLE_DEFAULT) or ALIVE_TABLE_DEFAULT).strip()
+        if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', table_name):
+            raise ValueError(f"table_name must match [A-Za-z_][A-Za-z0-9_]*. Got: {table_name!r}")
+        teams_notify       = bool(config.get("teams_notify", True))
+        notify_time_format = str(config.get("notify_time_format", "%Y-%m-%d %H:%M:%S"))
+
+        conn = sqlite3.connect(db_path, check_same_thread=False)
+        created = _ensure_alive_table(conn, table_name)
+        base.output_log(MODULE_NAME,
+            f"死活監視テーブルを{'新規作成しました' if created else '確認しました'}。 table={table_name}  db={db_path}", log_file)
+
+        names_list = [c for c, _ in ALIVE_TABLE_COLUMNS]
+        cols_str   = ", ".join(f'"{c}"' for c in names_list)
+        set_str    = ", ".join(f'"{c}" = excluded."{c}"' for c in names_list if c != "device_key")
+        sql_upsert = (f'INSERT INTO "{table_name}" ({cols_str}) VALUES ({", ".join("?" * len(names_list))})'
+                      f' ON CONFLICT("device_key") DO UPDATE SET {set_str}')
+        base.output_log(MODULE_NAME, f"UPSERT SQL: {sql_upsert}", log_file)
+
+        # 前回の状態（起動時に1回読み、以降はメモリに持つ）
+        states: Dict[str, Optional[str]] = {}
+        names:  Dict[str, str] = {}
+        for key, status, name in conn.execute(f'SELECT "device_key", "status", "device_name" FROM "{table_name}"'):
+            states[str(key)] = None if status is None else str(status)
+            if name:
+                names[str(key)] = str(name)
+        base.output_log(MODULE_NAME, f"前回の状態を読み込みました。 {len(states)}台  {states}", log_file)
+
+        base.metrics_add(MODULE_NAME, "total_segments", 0)
+        base.metrics_add(MODULE_NAME, "state_changes", 0)
+        base.metrics_set_last(MODULE_NAME, "last_seg_id", "-")
+        _set_alive_metrics(states, names, None)
+
+        base.output_log(MODULE_NAME,
+            f"{TRIGGER_NAME} Init OK.  db={db_path}  table={table_name}  teams_notify={teams_notify}", log_file)
+
+    except Exception as e:
+        ErrorIF.report_exception(e, phase="startup", category="config",
+                                 trigger_id=TRIGGER_NAME, log_file=log_file)
+        if conn:
+            try: conn.close()
+            except Exception: pass
+        stop_event.set()
+        return None
+
+    """======== LOOP START ========"""
+    base.output_log(MODULE_NAME, f"{TRIGGER_NAME} Start Loop...", log_file)
+    while True:
+        """キュー受信"""
+        try:
+            segment = post_queue.get(timeout=1.0)
+        except queue.Empty:
+            if (stop_event.is_set() and
+                    post_queue.qsize() == 0 and
+                    getattr(post_queue, "unfinished_tasks", 0) == 0):
+                break
+            continue
+
+        """sentinel → 終了"""
+        if segment is None:
+            post_queue.task_done()
+            break
+
+        """セグメント処理"""
+        try:
+            if not segment:
+                continue
+            seg_id = segment[0][0]
+
+            # 1. テーブルに入れる値（区切り行は除く。同じ機器が複数行あれば後の行を使う）
+            now = dt.now()
+            records: Dict[str, Dict[str, Any]] = {}
+            for row in segment:
+                rec = _alive_record(row, loc, now)
+                if rec is not None:
+                    records[rec["device_key"]] = rec
+            if not records:
+                base.output_log(MODULE_NAME, f"seg_id={seg_id}  No Device Row. skipped.")
+                continue
+
+            # 2. 機器ごとに UPSERT（1行の失敗で他の行を失わないよう SAVEPOINT で区切る）し、セグメントで1回コミット
+            done: List[Dict[str, Any]] = []
+            n_err = 0
+            try:
+                for rec in records.values():
+                    conn.execute("SAVEPOINT triedge_alive_row")
+                    try:
+                        conn.execute(sql_upsert, [_to_sqlite_val(rec[c]) for c in names_list])
+                        conn.execute("RELEASE SAVEPOINT triedge_alive_row")
+                        done.append(rec)
+                    except sqlite3.Error as e_rec:
+                        conn.execute("ROLLBACK TO SAVEPOINT triedge_alive_row")
+                        conn.execute("RELEASE SAVEPOINT triedge_alive_row")
+                        base.output_log(MODULE_NAME,
+                            f"Record UPSERT Error: seg_id={seg_id}  device_key={rec['device_key']}  {e_rec}", log_file)
+                        n_err += 1
+                conn.commit()
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
+                raise
+            base.output_log(MODULE_NAME, f"SQLite UPSERT 完了: seg_id={seg_id}  ok={len(done)}  err={n_err}")   # 正常は画面のみ
+
+            # 3. 状態の変化（コミットできた行のみ）→ メモリの状態を更新し、変化があれば通知
+            messages: List[str] = []
+            for rec in done:
+                msg = _alive_change_message(rec, states.get(rec["device_key"]), notify_time_format)
+                if msg:
+                    messages.append(msg)
+                states[rec["device_key"]] = rec["status"]
+                if rec.get("device_name"):
+                    names[rec["device_key"]] = rec["device_name"]
+
+            # 4. 運用系メトリクス（通知は送信時点の metrics を載せるため、通知の要求より先に更新）
+            base.metrics_add(MODULE_NAME, "total_segments", 1)
+            base.metrics_set_last(MODULE_NAME, "last_seg_id", seg_id)
+            _set_alive_metrics(states, names,
+                               max((r["checked_at"] for r in done if isinstance(r["checked_at"], dt)), default=None))
+            if messages:
+                base.metrics_add(MODULE_NAME, "state_changes", len(messages))
+                for m in messages:
+                    base.output_log(MODULE_NAME, f"状態変化: {m}", log_file)
+                if teams_notify:
+                    base.metrics_notify(MODULE_NAME, "\n\n".join(messages))
+
+        except Exception as e:
+            _sig = ErrorIF.report_exception(e, phase="loop", category="io",
+                                            trigger_id=TRIGGER_NAME, log_file=log_file)
+            if _sig == SIGNAL_STOP:
+                stop_event.set()
+                break
+            continue
+
+        finally:
+            post_queue.task_done()
+
+    """======== LOOP END ========"""
+    if conn:
+        try: conn.close()
+        except Exception: pass
+
+    base.output_log(MODULE_NAME, f"{TRIGGER_NAME} Stop.", log_file)
+    return None
+
+a_upsert_alive_to_sqlite_trigger.QMODE = "imq"
+a_upsert_alive_to_sqlite_trigger.CUT_LAST_ROW = True  # 終点行（区切り行 '____'）は core で除外して受け取る
 
 
 ########################################
