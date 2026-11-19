@@ -4,14 +4,15 @@
 """
 ########################################
 # Stored Common Utility
-# Ver: 01.h.20261108    By: IWATA, Y.'s Agent AI
-# Mod: 残す pyarrow の import（pyflakes で使っていないと出る）に、消さない理由のコメントを付けた（動作は変えない）
+# Ver: 01.i.20261118    By: IWATA,Y.'s Agent AI
+# Mod: load_or_create_cache を追加（pyarrow があれば parquet、無ければ pickle でキャッシュする）
 ########################################
 Stored 領域の各モジュールが共通で使う、ファイル読込み・キャッシュ・データ確認の部品集
 
 主要関数:
 read_segment_csv_dir                    # Stream が保存したセグメントの CSV 群を読み、1つの DataFrame にまとめる。
-load_or_create_pickle / load_or_create_parquet  # 重い読込みの結果をファイルに保存し、2回目以降はそこから読む。
+load_or_create_cache                    # 重い読込みの結果をファイルに保存し、2回目以降はそこから読む（pyarrow があれば parquet、無ければ pickle）。
+load_or_create_pickle / load_or_create_parquet  # 同上（形式を固定する版）。
 read_csv_all_rows                       # 区切りテキストを、文字コードを順に試しながら読む。
 check_df                                # 列ごとの型・値の範囲・ユニーク数を確かめる。
 log                                     # ログを出力する。
@@ -24,6 +25,7 @@ MODULE_NAME = "UTIL"
 """standard library"""
 import csv
 import glob
+import importlib.util
 import json
 import os
 import pickle
@@ -34,6 +36,7 @@ from   typing   import Any, Callable, Dict, List, Optional, Sequence, Tuple
 import pandas as pd
 try: import pyarrow # 名前は使わないが、save_parquet / load_parquet（pandas の to_parquet / read_parquet）のエンジンなので消さない（入っていなくても止めない）
 except ImportError: pass
+_HAS_PYARROW = importlib.util.find_spec("pyarrow") is not None  # load_or_create_cache が、キャッシュの形式（parquet / pickle）を選ぶのに使う
 
 
 def log(msg: str, src: str = "UTIL") -> None:
@@ -376,6 +379,33 @@ def load_or_create_parquet(parquet_path: str, loader: Callable[[], pd.DataFrame]
 
     df = loader()
     save_parquet(df, parquet_path)
+
+    return df
+
+
+def load_or_create_cache(path_stem: str, loader: Callable[[], pd.DataFrame]) -> pd.DataFrame:
+    """
+    DataFrame のキャッシュ。pyarrow があれば parquet、無ければ pickle で保存する（標準ライブラリだけでも動く）
+    Mod: 2026.11.18    By: IWATA,Y.'s Agent AI
+
+    path_stem は拡張子なしのパス（例: load_pp/cache/<データ名>_raw）。読む順番は、
+    ① pyarrow があり .parquet があればそれ、② .pickle があればそれ、③ どちらも無ければ loader() を呼んで保存する。
+    キャッシュを読めなかったとき（壊れている、pandas のバージョンが違う等）は、警告を出して③と同じく作り直す。
+    """
+    parquet_path, pickle_path = path_stem + ".parquet", path_stem + ".pickle"
+    try:
+        if _HAS_PYARROW and os.path.exists(parquet_path):
+            return load_parquet(parquet_path)
+        if os.path.exists(pickle_path):
+            return load_pickle(pickle_path)
+    except Exception as e:
+        log(f"WARNING  キャッシュを読めなかったため、取り直して作り直します: {e}")
+
+    df = loader()
+    if _HAS_PYARROW:
+        save_parquet(df, parquet_path)
+    else:
+        save_pickle(df, pickle_path)
 
     return df
 

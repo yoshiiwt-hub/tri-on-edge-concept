@@ -8,7 +8,10 @@ scikit-learn
 matplotlib
 seaborn
 plotly
-pyarrow          # for parquet
+# pyarrow        # optional: cache in parquet. Without it, the cache is saved in pickle (standard library)
 openpyxl         # for Excel output (eda: profiler, vz_dt image_to_excel)
 opencv-python    # for image size in vz_dt image_to_excel (cv2)
+# bokeh_sampledata    # for sample data loaded in load_pp. Install it separately WITHOUT its dependencies:
+#                     #   pip install --no-deps bokeh_sampledata
+#                     # (pip install -r cannot apply --no-deps to one line, and its dependencies may fail to install. bokeh itself is not needed)
 # japanize-matplotlib    # optional: Japanese font when running under /storage/ (Android, e.g. Pydroid 3). Elsewhere Meiryo is used

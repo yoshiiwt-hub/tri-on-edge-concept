@@ -13,6 +13,10 @@
 /src/load_pp/*
 !/src/load_pp/sin_wave.py
 !/src/load_pp/wine.py
+!/src/load_pp/diamonds.py
+!/src/load_pp/mpg.py
+!/src/load_pp/autompg2.py
+!/src/load_pp/glucose.py
 
 !/src/load_pp/data/
 /src/load_pp/data/*
