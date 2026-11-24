@@ -4,8 +4,8 @@
 """
 ########################################
 # Find Trigger Module [Text]
-# Ver: 01.r.20261108    By: IWATA, Y.'s Agent AI
-# Mod: pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string を削除。動作は変えない）
+# Ver: 01.s.20261124    By: IWATA,Y.'s Agent AI
+# Mod: 型変換に失敗した列名を CAST_FAIL のメッセージに出すようにした（IWATA, Y.）。ファイル安定チェックの間隔を設定 stable_check_sec で変えられるようにした（省略時 0.2 秒）（IWATA,Y.'s Agent AI）
 ########################################
 フォルダに置かれた CSV・TSV 等の区切りテキストを読み、行ごとのデータとして取り込む入口
 
@@ -174,7 +174,8 @@ def f_find_text_trigger(
     ) -> None:
     """
     CSV/TSV等の区切りテキストファイルを監視し、パースしてキューに流す
-    Mod: 2026.10.06    By: IWATA, Y.'s Agent AI（列の割当て: 指定の無い列は列番号＝区切り位置、重複は後勝ち）
+    Mod: 2026.11.24    By: IWATA, Y.（CAST_FAIL に失敗した列名を出す）
+    Mod: 2026.11.24    By: IWATA,Y.'s Agent AI（安定チェックの間隔 stable_check_sec。省略時 0.2 秒）
 
     [動作の要点]（旧モジュール Docstring から移動）
         tri_s19_util.parse_delimited_text はファイル不存在・全エンコード失敗時にそのまま例外を投げる（util は ErrorIF に依存しないため）。
@@ -192,6 +193,8 @@ def f_find_text_trigger(
         pfx_sfx = config.get("pfx_sfx", ([], [".csv"]))
 
         stable_check_n = int(config.get("stable_check_n", "1"))
+        stable_check_sec = float(config.get("stable_check_sec", utl.STABLE_CHECK_SEC_DEFAULT))  # 安定チェックの間隔（秒）。省略時 0.2
+        base.output_log(MODULE_NAME, f"{TRIGGER_NAME} stable_check_n={stable_check_n} stable_check_sec={stable_check_sec}", log_file)
         interval_sec   = config.get("interval_sec", 2)
 
         """ SETTING（読み取った後の処理） """
@@ -399,7 +402,7 @@ def f_find_text_trigger(
                 if is_seen: continue
 
                 # 安定したファイルのみ
-                not_stable = not(utl.check_file_stability_retry(stable_check_n, f_path))
+                not_stable = not(utl.check_file_stability_retry(stable_check_n, f_path, stable_check_sec))
                 if not_stable: continue
 
                 """テキストパース"""
@@ -442,14 +445,16 @@ def f_find_text_trigger(
 
                     row = _remap_row(row, col_assign, n_extra)
 
-                    value, cast_fails = base.cast_dtype(row, cast_plan)
+                    value, cast_fails, fail_cols = base.cast_dtype(row, cast_plan)
                     if cast_fails > 0:
+                        # 失敗列の列定義情報を取得
+                        fail_col_names = [col_def[i][0] if i in col_def else f"col[{i}]" for i in fail_cols]
                         ErrorIF.report_event({
                             "signature": "CAST_FAIL",
                             "phase": "loop",
                             "category": "data",
                             "trigger_id": TRIGGER_NAME,
-                            "message": f"Cast failed {cast_fails} cols. file={f_path}",
+                            "message": f"Cast failed {cast_fails} cols: {fail_col_names}. file={f_path}",
                             "log_file": log_file,
                         })
 

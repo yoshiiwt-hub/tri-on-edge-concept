@@ -4,8 +4,8 @@
 """
 ########################################
 # Act Trigger Module [Remote File (SMB)]
-# Ver: 02.h.20261108    By: IWATA, Y.'s Agent AI
-# Mod: pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string を削除。動作は変えない）
+# Ver: 02.i.20261124    By: IWATA,Y.'s Agent AI
+# Mod: ファイル安定チェックの間隔を設定 stable_check_sec で変えられるようにした（省略時 0.2 秒）
 ########################################
 Find が見つけたファイルを、ネットワーク上の共有フォルダ（SMB）へ送り届ける出口
 
@@ -130,7 +130,7 @@ def a_send_remote_file_trigger(
 ) -> None:
     """
     セグメントの file_path 列のファイルを SMB 共有フォルダへアップロードする
-    Mod: 2026.10.06    By: IWATA, Y.'s Agent AI（remote_dir / move_to に数値を指定すると、その列の値をアップロード先・移動先にする）
+    Mod: 2026.11.24    By: IWATA,Y.'s Agent AI（安定チェックの間隔 stable_check_sec。省略時 0.2 秒）
 
     [動作の要点]（旧モジュール Docstring から移動）
         相対パス・フォルダは処理せず、異常としてログに残す
@@ -161,6 +161,7 @@ def a_send_remote_file_trigger(
         # ---- 入力設定 ----
         file_path_col = base.resolve_act_col(config.get("file_path_col", 0), col_def, "file_path_col")  # Find と同じ列番号
         stable_check_n = int(config.get("stable_check_n", 1))
+        stable_check_sec = float(config.get("stable_check_sec", utl.STABLE_CHECK_SEC_DEFAULT))  # 安定チェックの間隔（秒）。省略時 0.2
 
         # ---- アップロード後の処理 ----
         after_upload = config.get("after_upload", "keep")
@@ -220,7 +221,7 @@ def a_send_remote_file_trigger(
         smb_dir    = f"{smb_base}\\{remote_dir}" if remote_dir else smb_base
 
         base.output_log(MODULE_NAME,
-            f"{TRIGGER_NAME} file_path_col={file_path_col} stable_check_n={stable_check_n} "
+            f"{TRIGGER_NAME} file_path_col={file_path_col} stable_check_n={stable_check_n} stable_check_sec={stable_check_sec} "
             f"after_upload={after_upload} move_to={move_to} rename_pfx_sfx={[rename_pfx, rename_sfx]} "
             f"smb_dir={smb_dir} remote_dir_col={remote_dir_col} move_to_col={move_to_col} "
             f"overwrite={overwrite} make_subdir_level={make_subdir_level}", log_file)
@@ -442,7 +443,7 @@ def a_send_remote_file_trigger(
             return False
 
         # 安定したファイルのみ
-        if stable_check_n > 0 and not utl.check_file_stability_retry(stable_check_n, local_path):
+        if stable_check_n > 0 and not utl.check_file_stability_retry(stable_check_n, local_path, stable_check_sec):
             _report_ng(file_name, f"File NOT Stable, skip. seg_id={seg_id}  {local_path}")
             return False
 

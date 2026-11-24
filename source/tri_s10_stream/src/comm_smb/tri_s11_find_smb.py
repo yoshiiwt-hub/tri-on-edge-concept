@@ -4,9 +4,8 @@
 """
 ########################################
 # Find Trigger Module [Remote File (SMB)]
-# Ver: 01.g.20261108    By: IWATA, Y.'s Agent AI
-# Mod: smb_domain（または環境変数 SMB_DOMAIN）があると、ユーザー名にドメイン名を付けてセッションを登録する（SMB act と同じ形）。
-#      pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string を削除。動作は変えない）
+# Ver: 01.h.20261124    By: IWATA,Y.'s Agent AI
+# Mod: ファイル安定チェックの間隔を設定 stable_check_sec で変えられるようにした（省略時 0.2 秒）（従来は 1 秒固定）
 ########################################
 ネットワーク上の共有フォルダ（SMB）にあるファイルを監視して取り込む入口
 
@@ -127,13 +126,15 @@ def _list_smb_files(
     return result
 
 
-def _check_smb_file_stability(smb_path: str, n: int = 1) -> bool:
-    """SMBファイルの安定チェック（サイズ・更新時刻が n 回とも変化なし）"""
-    CHECK_INTERVAL = 1
+def _check_smb_file_stability(smb_path: str, n: int = 1, interval_sec: float = utl.STABLE_CHECK_SEC_DEFAULT) -> bool:
+    """
+    SMBファイルの安定チェック（interval_sec 秒をはさんで、サイズ・更新時刻が n 回とも変化なし）
+    Mod: 2026.11.24    By: IWATA,Y.'s Agent AI（間隔を引数 interval_sec にした。従来は 1 秒固定、省略時 0.2 秒）
+    """
     try:
         for _ in range(n):
             stat1 = smbclient.stat(smb_path)
-            time.sleep(CHECK_INTERVAL)
+            time.sleep(interval_sec)
             stat2 = smbclient.stat(smb_path)
             if stat1.st_mtime != stat2.st_mtime or stat1.st_size != stat2.st_size:
                 return False
@@ -165,7 +166,7 @@ def f_find_remote_file_trigger(
 ) -> None:
     """
     SMB共有フォルダを監視し、条件に該当したファイル情報をキューに流す
-    Mod: 2026.06.12    By: IWATA,Y.
+    Mod: 2026.11.24    By: IWATA,Y.'s Agent AI（安定チェックの間隔 stable_check_sec。省略時 0.2 秒）
 
     [接続の扱い]
         リトライ: 監視フォルダの一覧を取れなければ、retry_wait_sec ごとにつなぎ直して取り直す（このトリガーの中だけ）
@@ -202,6 +203,7 @@ def f_find_remote_file_trigger(
         search_subdir  = config.get("search_subdir", False)
         pfx_sfx        = config.get("pfx_sfx", [[""], [".csv", ".json"]])
         stable_check_n = int(config.get("stable_check_n", 1))
+        stable_check_sec = float(config.get("stable_check_sec", utl.STABLE_CHECK_SEC_DEFAULT))  # 安定チェックの間隔（秒）。省略時 0.2
 
         check_ack = config.get("check_ack", False)
         ack_ext   = config.get("ack_file_ext", ".done").replace(".", "") if check_ack else ""
@@ -218,7 +220,7 @@ def f_find_remote_file_trigger(
 
         base.output_log(MODULE_NAME,
             f"{TRIGGER_NAME} smb_dir={smb_dir} search_subdir={search_subdir} pfx_sfx={pfx_sfx} "
-            f"stable_check_n={stable_check_n} check_ack={check_ack} ignore_old={ignore_old} "
+            f"stable_check_n={stable_check_n} stable_check_sec={stable_check_sec} check_ack={check_ack} ignore_old={ignore_old} "
             f"copy_found={copy_found} interval_sec={interval_sec} retry_max={retry_max} "
             f"retry_wait_sec={retry_wait_sec} reconnect_interval_sec={reconnect_interval_sec}",
             log_file)
@@ -375,7 +377,7 @@ def f_find_remote_file_trigger(
                     continue
 
                 # 安定したファイルのみ
-                if not _check_smb_file_stability(smb_path, stable_check_n):
+                if not _check_smb_file_stability(smb_path, stable_check_n, stable_check_sec):
                     base.output_log(MODULE_NAME, f"File NOT Stable, skip. {smb_path}", log_file)
                     continue
 

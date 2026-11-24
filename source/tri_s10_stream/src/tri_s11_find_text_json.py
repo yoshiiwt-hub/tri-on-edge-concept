@@ -4,8 +4,8 @@
 """
 ########################################
 # Find Trigger Module [JSON]
-# Ver: 01.j.20261108    By: IWATA, Y.'s Agent AI
-# Mod: pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string を削除。動作は変えない）
+# Ver: 01.k.20261124    By: IWATA,Y.'s Agent AI
+# Mod: 型変換に失敗した列名を CAST_FAIL のメッセージに出すようにした（IWATA, Y.）。ファイル安定チェックの間隔を設定 stable_check_sec で変えられるようにした（省略時 0.2 秒）（IWATA,Y.'s Agent AI）
 ########################################
 フォルダに置かれた JSON ファイルを読み、必要な値を抜き出してレコードとして取り込む入口
 
@@ -99,7 +99,8 @@ def f_read_json_trigger(
     ) -> None:
     """
     指定フォルダを監視し、JSONを読込んで展開
-    Mod: 2026.10.02    By: IWATA, Y.'s Agent AI（after_read を追加）
+    Mod: 2026.11.24    By: IWATA, Y.（CAST_FAIL に失敗した列名を出す）
+    Mod: 2026.11.24    By: IWATA,Y.'s Agent AI（安定チェックの間隔 stable_check_sec。省略時 0.2 秒）
 
     [動作の要点]（旧モジュール Docstring から移動）
         ファイル I/O エラー（OSError / PermissionError）は報告し、同種エラーが頻発（デフォルト: 60秒に5回）していれば
@@ -130,6 +131,7 @@ def f_read_json_trigger(
         pfx_sfx        = config.get("pfx_sfx", ([], [".json"]))
         encoding       = config.get("encoding", "utf-8-sig")
         stable_check_n = int(config.get("stable_check_n", "1"))
+        stable_check_sec = float(config.get("stable_check_sec", utl.STABLE_CHECK_SEC_DEFAULT))  # 安定チェックの間隔（秒）。省略時 0.2
         ack_ext        = config.get("ack_file_ext", "").replace(".", "")
         check_ack      = bool(ack_ext)
         pause_interval_sec = config.get("pause_interval_sec", 30)
@@ -161,7 +163,7 @@ def f_read_json_trigger(
         base.output_log(MODULE_NAME,
             f"{TRIGGER_NAME} monitor_dir={monitor_dir} search_subdir={search_subdir} "
             f"interval_sec={interval_sec} pfx_sfx={pfx_sfx} encoding={encoding} "
-            f"stable_check_n={stable_check_n} check_ack={check_ack} ack_ext={ack_ext} "
+            f"stable_check_n={stable_check_n} stable_check_sec={stable_check_sec} check_ack={check_ack} ack_ext={ack_ext} "
             f"pause_interval_sec={pause_interval_sec}", log_file)
 
         """ SETTING（マッピング） """
@@ -257,7 +259,7 @@ def f_read_json_trigger(
                 if is_seen: continue
 
                 # 安定したファイルのみ
-                not_stable = not(utl.check_file_stability_retry(stable_check_n, f_path))
+                not_stable = not(utl.check_file_stability_retry(stable_check_n, f_path, stable_check_sec))
                 if not_stable: continue
 
                 # Ackファイル存在チェック
@@ -321,14 +323,15 @@ def f_read_json_trigger(
                         for out_k, in_k in item_map.items():
                             record_val.append(item.get(in_k))
 
-                        value, cast_fails = base.cast_dtype(record_val, cast_plan)
+                        value, cast_fails, fail_cols = base.cast_dtype(record_val, cast_plan)
                         if cast_fails > 0:
+                            fail_col_names = [col_def[i][0] if i in col_def else f"col[{i}]" for i in fail_cols]
                             ErrorIF.report_event({
                                 "signature": "CAST_FAIL",
                                 "phase": "loop",
                                 "category": "data",
                                 "trigger_id": TRIGGER_NAME,
-                                "message": f"Cast failed {cast_fails} cols. file={f_path}",
+                                "message": f"Cast failed {cast_fails} cols: {fail_col_names}. file={f_path}",
                                 "log_file": log_file,
                             })
 
@@ -341,14 +344,15 @@ def f_read_json_trigger(
                         record_val_ = common_data.copy()
                         record_val_.append(file_name)
 
-                        value, cast_fails = base.cast_dtype(record_val_, cast_plan)
+                        value, cast_fails, fail_cols = base.cast_dtype(record_val_, cast_plan)
                         if cast_fails > 0:
+                            fail_col_names = [col_def[i][0] if i in col_def else f"col[{i}]" for i in fail_cols]
                             ErrorIF.report_event({
                                 "signature": "CAST_FAIL",
                                 "phase": "loop",
                                 "category": "data",
                                 "trigger_id": TRIGGER_NAME,
-                                "message": f"Cast failed {cast_fails} cols (handle_json). file={f_path}",
+                                "message": f"Cast failed {cast_fails} cols: {fail_col_names} (handle_json). file={f_path}",
                                 "log_file": log_file,
                             })
 

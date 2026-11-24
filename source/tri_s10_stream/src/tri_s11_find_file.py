@@ -4,8 +4,8 @@
 """
 ########################################
 # Find Trigger Module [File]
-# Ver: 07.g.20261108    By: IWATA, Y.'s Agent AI
-# Mod: pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string を削除。動作は変えない）
+# Ver: 07.h.20261124    By: IWATA,Y.'s Agent AI
+# Mod: ファイル安定チェックの間隔を設定 stable_check_sec で変えられるようにした（省略時 0.2 秒）
 ########################################
 フォルダに置かれたファイルを見つけて、そのファイルの情報を取り込む入口
 
@@ -141,7 +141,7 @@ def f_find_file_trigger(
     ) -> None:
     """
     フォルダを監視し、条件に該当したファイル名をキューに流す
-    Mod: 2026.10.20    By: IWATA, Y.'s Agent AI（extra_col_def に対応）
+    Mod: 2026.11.24    By: IWATA,Y.'s Agent AI（安定チェックの間隔 stable_check_sec。省略時 0.2 秒）
     """
     TRIGGER_NAME = "f_find_file_trigger"
     
@@ -153,6 +153,7 @@ def f_find_file_trigger(
         pfx_sfx = config.get("pfx_sfx", ("", ".json"))
         
         stable_check_n = int(config.get("stable_check_n", "1"))
+        stable_check_sec = float(config.get("stable_check_sec", utl.STABLE_CHECK_SEC_DEFAULT))  # 安定チェックの間隔（秒）。省略時 0.2
         
         check_ack = config.get("check_ack", False)
         if check_ack:
@@ -172,7 +173,7 @@ def f_find_file_trigger(
         extra_col_def, extra_col_default = _load_extra_col_def(config, len(col_def))
         base.output_log(MODULE_NAME, f"{TRIGGER_NAME} extra_col_def={extra_col_def} extra_col_default={extra_col_default!r}", log_file)
         
-        base.output_log(MODULE_NAME, f"{TRIGGER_NAME} monitor_dir={monitor_dir} search_subdir={search_subdir} pfx_sfx={pfx_sfx} stable_check_n={stable_check_n} check_ack={check_ack} ignore_old={ignore_old} copy_found={copy_found} interval_sec={interval_sec}", log_file)
+        base.output_log(MODULE_NAME, f"{TRIGGER_NAME} monitor_dir={monitor_dir} search_subdir={search_subdir} pfx_sfx={pfx_sfx} stable_check_n={stable_check_n} stable_check_sec={stable_check_sec} check_ack={check_ack} ignore_old={ignore_old} copy_found={copy_found} interval_sec={interval_sec}", log_file)
         
         """発見済みファイル名格納用DB"""
         db_path = os.path.join(work_db_dir, f"{TRIGGER_NAME}_seen_files.db")
@@ -212,7 +213,7 @@ def f_find_file_trigger(
                 if is_seen: continue
 
                 # 安定したファイルのみ
-                not_stable = not(utl.check_file_stability_retry(stable_check_n, f_path))
+                not_stable = not(utl.check_file_stability_retry(stable_check_n, f_path, stable_check_sec))
                 if not_stable:
                     base.output_log(MODULE_NAME, f"File NOTE Stable, to Skip. {f_path}", log_file)
                     continue

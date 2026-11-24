@@ -4,8 +4,8 @@
 """
 ########################################
 # Find Trigger Module [FTP Server + Text]
-# Ver: 01.c.20261114    By: IWATA,Y.'s Agent AI
-# Mod: FTP サーバーの開始メッセージ（pyftpdlib）が 0.5 秒ごとに出る不具合を直した（serve_forever() の代わりに ioloop.loop() を呼ぶ）
+# Ver: 01.d.20261124    By: IWATA,Y.'s Agent AI
+# Mod: 型変換に失敗した列名を CAST_FAIL のメッセージに出すようにした（IWATA, Y.）。ファイル安定チェックの間隔を設定 stable_check_sec で変えられるようにした（省略時 0.2 秒）（IWATA,Y.'s Agent AI）
 ########################################
 装置が FTP で送ってくる CSV・TSV 等の区切りテキストを、エッジ側の FTP サーバーで受け取り、行ごとのデータとして取り込む入口
 
@@ -97,7 +97,8 @@ def f_find_ftp_csv_trigger(
 ) -> None:
     """
     FTP サーバーで区切りテキストを受信し、読んで1行ずつキューに流す（1ファイル = 1セグメント）
-    Mod: 2026.11.14    By: IWATA,Y.'s Agent AI
+    Mod: 2026.11.24    By: IWATA, Y.（CAST_FAIL に失敗した列名を出す）
+    Mod: 2026.11.24    By: IWATA,Y.'s Agent AI（安定チェックの間隔 stable_check_sec。省略時 0.2 秒）
 
     [動作の要点]
         受け取り: tri_s11_find_ftp と同じ。受信完了・受信後のリネームで動き、pfx_sfx（既定 [[], [".csv"]]）→ 安定チェック → ACK を確かめる
@@ -144,12 +145,13 @@ def f_find_ftp_csv_trigger(
 
         """ 安定チェック・Ack 設定 """
         stable_check_n = int(config.get("stable_check_n", 1))
+        stable_check_sec = float(config.get("stable_check_sec", utl.STABLE_CHECK_SEC_DEFAULT))  # 安定チェックの間隔（秒）。省略時 0.2
         check_ack    = bool(config.get("check_ack", False))
         ack_file_ext = str(config.get("ack_file_ext", "done")).strip().lstrip(".")
         if check_ack and not ack_file_ext:
             raise ValueError("ack_file_ext is required when check_ack=true")
         base.output_log(MODULE_NAME,
-            f"filter_prefixes={filter_prefixes} filter_suffixes={filter_suffixes} stable_check_n={stable_check_n} "
+            f"filter_prefixes={filter_prefixes} filter_suffixes={filter_suffixes} stable_check_n={stable_check_n} stable_check_sec={stable_check_sec} "
             f"check_ack={check_ack} ack_file_ext={ack_file_ext}", log_file)
 
         """ 読み取った後の処理（tri_s11_find_text_csv と同じ。既定 keep） """
@@ -349,14 +351,15 @@ def f_find_ftp_csv_trigger(
                 continue
             if row_range_end is not None and row_i > row_range_end:
                 break  # records は行番号順のため、これ以降は全て範囲外
-            value, cast_fails = base.cast_dtype(_remap_row(row, col_assign, n_extra), cast_plan)
+            value, cast_fails, fail_cols = base.cast_dtype(_remap_row(row, col_assign, n_extra), cast_plan)
             if cast_fails > 0:
+                fail_col_names = [col_def[i][0] if i in col_def else f"col[{i}]" for i in fail_cols]
                 ErrorIF.report_event({
                     "signature": "CAST_FAIL",
                     "phase": "loop",
                     "category": "data",
                     "trigger_id": TRIGGER_NAME,
-                    "message": f"Cast failed {cast_fails} cols. file={f_path}",
+                    "message": f"Cast failed {cast_fails} cols: {fail_col_names}. file={f_path}",
                     "log_file": log_file,
                 })
             rows.append(value)
@@ -412,7 +415,7 @@ def f_find_ftp_csv_trigger(
 
             """安定チェック"""
             if stable_check_n > 0:
-                if not utl.check_file_stability_retry(stable_check_n, file_path):
+                if not utl.check_file_stability_retry(stable_check_n, file_path, stable_check_sec):
                     base.output_log(MODULE_NAME, f"File not stable, skip: {file_path}", log_file)
                     continue
 

@@ -4,9 +4,8 @@
 """
 ########################################
 # Find Trigger [MQTT]
-# Ver: 01.l.20261106    By: IWATA, Y.'s Agent AI
-# Mod: 接続できない状態の管理を共通の tri_s01_connect_state（ConnectState）に置き換え。接続の失敗・切断の検知は
-#      retry_wait_sec ごとにその場で接続し直し（リトライ）、連続 retry_max 回で not_connectable とする
+# Ver: 01.m.20261124    By: IWATA, Y.
+# Mod: 型変換に失敗した列名を CAST_FAIL のメッセージに出すようにした
 ########################################
 MQTT のトピックに届く値を、列にまとめて取り込む入口
 
@@ -97,7 +96,7 @@ def f_find_mqtt_trigger(
 ) -> None:
     """
     MQTT ブローカーからメッセージを受信し、キューに流す
-    Mod: 2026.08.01    By: IWATA,Y.
+    Mod: 2026.11.24    By: IWATA, Y.（CAST_FAIL に失敗した列名を出す）
 
     [接続の扱い]
         リトライ: 接続（CONNACK が来ない・拒否）に失敗したり、切断を検知したら、retry_wait_sec ごとに接続し直す（このトリガーの中だけ）
@@ -457,13 +456,14 @@ def f_find_mqtt_trigger(
                 except queue.Empty:
                     continue
 
-                row_casted, cast_fails = base.cast_dtype(row, cast_plan)
+                row_casted, cast_fails, fail_cols = base.cast_dtype(row, cast_plan)
                 if cast_fails > 0:
+                    fail_col_names = [col_def[i][0] if i in col_def else f"col[{i}]" for i in fail_cols]
                     ErrorIF.report_event({
                         "signature": "CAST_FAIL",
                         "phase": "loop", "category": "data",
                         "trigger_id": TRIGGER_NAME,
-                        "message": f"Cast failed {cast_fails} cols.",
+                        "message": f"Cast failed {cast_fails} cols: {fail_col_names}.",
                         "log_file": log_file,
                     })
                 queue_out.put((count, row_casted))
@@ -474,13 +474,14 @@ def f_find_mqtt_trigger(
             with current_lock:
                 row = list(current_values)
 
-            row_casted, cast_fails = base.cast_dtype(row, cast_plan)
+            row_casted, cast_fails, fail_cols = base.cast_dtype(row, cast_plan)
             if cast_fails > 0:
+                fail_col_names = [col_def[i][0] if i in col_def else f"col[{i}]" for i in fail_cols]
                 ErrorIF.report_event({
                     "signature": "CAST_FAIL",
                     "phase": "loop", "category": "data",
                     "trigger_id": TRIGGER_NAME,
-                    "message": f"Cast failed {cast_fails} cols.",
+                    "message": f"Cast failed {cast_fails} cols: {fail_col_names}.",
                     "log_file": log_file,
                 })
             queue_out.put((count, row_casted))

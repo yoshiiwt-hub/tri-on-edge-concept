@@ -4,8 +4,8 @@
 """
 ########################################
 # Utility Module
-# Ver: 02.x.20261108    By: IWATA, Y.'s Agent AI
-# Mod: pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string を削除。動作は変えない）
+# Ver: 02.y.20261124    By: IWATA,Y.'s Agent AI
+# Mod: ファイル安定チェックの間隔を短くした（IWATA, Y.）。間隔を引数 interval_sec で変えられるようにし、省略時は 0.2 秒にした（IWATA,Y.'s Agent AI）
 ########################################
 複数のトリガーで繰り返し使う、ファイル・フォルダ・SQLite・テキスト処理の部品集
 
@@ -111,18 +111,20 @@ def check_ack_file_exists(ack_ext: str, file_path: str) -> bool:
         return os.path.exists(f"{file_path}.{ack_ext}")
 
 
-def check_file_stability(path: str) -> bool:
+STABLE_CHECK_SEC_DEFAULT = 0.2   # ファイル安定チェックの間隔（秒）の既定値。各トリガーの設定 stable_check_sec を省略したときに使う
+
+
+def check_file_stability(path: str, interval_sec: float = STABLE_CHECK_SEC_DEFAULT) -> bool:
     """
-    ファイル安定チェック
+    ファイル安定チェック（interval_sec 秒をはさんで、サイズ・更新時刻が変わらなければ安定）
     想定外の例外（権限エラー等）でもログを残して False（不安定扱い）を返す。
     従来は sys.exit(-1) しており、Find のスレッド内で呼ばれるとスレッドだけが黙って終了していた
-    Mod: 2026.10.05    By: IWATA, Y.'s Agent AI（A-10）
+    Mod: 2026.11.24    By: IWATA, Y.（間隔を 1 秒から短くした）
+    Mod: 2026.11.24    By: IWATA,Y.'s Agent AI（間隔を引数 interval_sec にした。省略時 0.2 秒）
     """
-    CHECK_INTERVAL = 1
-
     try:
         stat1 = os.stat(path)
-        time.sleep(CHECK_INTERVAL)
+        time.sleep(interval_sec)
         stat2 = os.stat(path)
 
         if stat1.st_mtime != stat2.st_mtime or stat1.st_size != stat2.st_size:
@@ -139,10 +141,13 @@ def check_file_stability(path: str) -> bool:
     return False
 
 
-def check_file_stability_retry(n: int, path: str) -> bool:
-    """ファイル安定チェック（複数回）"""
+def check_file_stability_retry(n: int, path: str, interval_sec: float = STABLE_CHECK_SEC_DEFAULT) -> bool:
+    """
+    ファイル安定チェック（n 回。1 回ごとに interval_sec 秒待つ）
+    Mod: 2026.11.24    By: IWATA,Y.'s Agent AI（間隔を引数 interval_sec にした。省略時 0.2 秒）
+    """
     for i in range(n):
-        if not check_file_stability(path): return False
+        if not check_file_stability(path, interval_sec): return False
         
     return True
 

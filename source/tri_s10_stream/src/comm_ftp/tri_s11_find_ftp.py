@@ -4,8 +4,8 @@
 """
 ########################################
 # Find Trigger Module [FTP Server]
-# Ver: 01.k.20261114    By: IWATA,Y.'s Agent AI
-# Mod: FTP サーバーの開始メッセージ（pyftpdlib）が 0.5 秒ごとに出る不具合を直した（serve_forever() の代わりに ioloop.loop() を呼ぶ）
+# Ver: 01.l.20261124    By: IWATA,Y.'s Agent AI
+# Mod: ファイル安定チェックの間隔を設定 stable_check_sec で変えられるようにした（省略時 0.2 秒）
 ########################################
 装置が FTP で送ってくるファイルを、エッジ側の FTP サーバーで受け取って取り込む入口
 
@@ -96,7 +96,7 @@ def f_find_ftp_trigger(
 ) -> None:
     """
     FTPサーバでファイルを受信し、ファイルパスをキューに流す
-    Mod: 2026.11.14    By: IWATA,Y.'s Agent AI
+    Mod: 2026.11.24    By: IWATA,Y.'s Agent AI（安定チェックの間隔 stable_check_sec。省略時 0.2 秒）
     """
     TRIGGER_NAME = "f_find_ftp_trigger"
 
@@ -135,7 +135,8 @@ def f_find_ftp_trigger(
 
         """ 安定チェック """
         stable_check_n = int(config.get("stable_check_n", 1))
-        base.output_log(MODULE_NAME, f"stable_check_n={stable_check_n}", log_file)
+        stable_check_sec = float(config.get("stable_check_sec", utl.STABLE_CHECK_SEC_DEFAULT))  # 安定チェックの間隔（秒）。省略時 0.2
+        base.output_log(MODULE_NAME, f"stable_check_n={stable_check_n} stable_check_sec={stable_check_sec}", log_file)
 
         """ Ack設定 """
         check_ack    = bool(config.get("check_ack", False))
@@ -268,7 +269,7 @@ def f_find_ftp_trigger(
 
             """安定チェック"""
             if stable_check_n > 0:
-                if not utl.check_file_stability_retry(stable_check_n, file_path):
+                if not utl.check_file_stability_retry(stable_check_n, file_path, stable_check_sec):
                     base.output_log(MODULE_NAME,
                         f"File not stable, skip: {file_path}", log_file)
                     continue

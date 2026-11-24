@@ -4,8 +4,8 @@
 """
 ########################################
 # Find Trigger Module [Agentic Template]
-# Ver: 01.h.20261114    By: IWATA,Y.'s Agent AI
-# Mod: 毎ループの画面表示を、設定 show_in_loop（省略時 false）で出すかどうか選べるようにした
+# Ver: 01.i.20261124    By: IWATA, Y.
+# Mod: 型変換に失敗した列名を CAST_FAIL のメッセージに出すようにした
 ########################################
 別プロセスのエージェントから値を受け取って取り込む、Agentic Trigger の Find 側の雛形
 
@@ -92,7 +92,7 @@ def f_agentic_trigger(
 ) -> None:
     """
     Agent を Subprocess で起動・管理
-    Mod: 2026.11.14    By: IWATA,Y.'s Agent AI
+    Mod: 2026.11.24    By: IWATA, Y.（CAST_FAIL に失敗した列名を出す）
 
     [動作の要点]（旧モジュール Docstring から移動）
         エージェントとは GET / ACK / NACK で通信する。受信した JSON を col_def の dtype で型変換し、失敗したら NACK を送って送り直してもらう（最大 99 回）
@@ -453,18 +453,19 @@ def f_agentic_trigger(
                 
                 """2. Cast Dtype"""
                 value = json.loads(_res[:-1])
-                value, cast_fails = base.cast_dtype(value, cast_plan)
+                value, cast_fails, fail_cols = base.cast_dtype(value, cast_plan)
                 ##print(f"cast_fails={cast_fails} value={value}", flush=True)##
                 
                 """loop start"""
                 _cnt = 0
                 while cast_fails > 0:
+                    fail_col_names = [col_def[i][0] if i in col_def else f"col[{i}]" for i in fail_cols]
                     ErrorIF.report_event({
                         "signature": "CAST_FAIL",
                         "phase"    : "loop",
                         "category" : "data",
                         "trigger_id": TRIGGER_NAME,
-                        "message"  : f"Cast failed {cast_fails} cols.",
+                        "message"  : f"Cast failed {cast_fails} cols: {fail_col_names}.",
                         "log_file" : log_file,
                     })
                     
@@ -483,7 +484,7 @@ def f_agentic_trigger(
                     ##print(f"_res_post={_res_post}", flush=True)##
                     
                     value = json.loads(_res[:-1])
-                    value, cast_fails = base.cast_dtype(value, cast_plan) ##print(f"cast_fails={cast_fails} value={value}", flush=True)##
+                    value, cast_fails, fail_cols = base.cast_dtype(value, cast_plan) ##print(f"cast_fails={cast_fails} value={value}", flush=True)##
                     
                     _cnt += 1
                     if _cnt == 99: raise Exception("NACK Retry Limit Reached.")
