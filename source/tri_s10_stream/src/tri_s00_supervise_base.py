@@ -4,8 +4,8 @@
 """
 ########################################
 # Supervise Base Module
-# Ver: 03.l.20261108    By: IWATA, Y.'s Agent AI
-# Mod: pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string を削除。動作は変えない）
+# Ver: 03.m.20261124    By: IWATA, Y.
+# Mod: cast_dtype が、型変換に失敗した列の番号のリストも返すようにした（戻り値が3つになる）
 ########################################
 全モジュールが共通で使う、パス・設定・ログ・状態の置き場となる基盤
 
@@ -755,13 +755,15 @@ def set_cast_dtype(
 def cast_dtype(
     values: list,
     cast_plan: Dict[int, Tuple[Callable, Any]],
-    ) -> Tuple[list, int]:
+    ) -> Tuple[list, int, List[int]]:
     """
     cast_planに従い、リストの各要素を型変換
-    Mod: 2026.04.17    By: IWATA,Y.
+    Returns: (変換済みリスト, 失敗件数, 失敗列インデックスのリスト)
+    Mod: 2026.11.24    By: IWATA, Y.（失敗列インデックスを返すように改良）
     """
     casted_values = []
     fail_count = 0
+    fail_cols = []
     for i, val in enumerate(values):
         cast_func, default_val = cast_plan[i]
         result = default_val
@@ -771,9 +773,10 @@ def cast_dtype(
                 
         except (ValueError, TypeError):
             fail_count += 1
+            fail_cols.append(i)
             
         casted_values.append(result)
-    return casted_values, fail_count
+    return casted_values, fail_count, fail_cols
 
 
 ########################################

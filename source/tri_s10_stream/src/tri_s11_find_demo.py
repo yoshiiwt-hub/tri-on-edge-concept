@@ -4,8 +4,8 @@
 """
 ########################################
 # Find Trigger Module [Demo]
-# Ver: 06.h.20261114    By: IWATA,Y.'s Agent AI
-# Mod: 毎ループの画面表示を、設定 show_in_loop（省略時 false）で出すかどうか選べるようにした
+# Ver: 06.i.20261124    By: IWATA, Y.
+# Mod: 型変換に失敗した列名を CAST_FAIL のメッセージに出すようにした
 ########################################
 実機が無くても TriEdge の動作を確かめられるよう、デモ用のデータを流す
 
@@ -171,7 +171,7 @@ def f_demo_csv_trigger(
 ) -> None:
     """
     デモ）CSVを読み込んでキューに送信
-    Mod: 2026.11.14    By: IWATA,Y.'s Agent AI
+    Mod: 2026.11.24    By: IWATA, Y.（CAST_FAIL に失敗した列名を出す）
 
     [画面表示] show_in_loop: true で、送った行を毎回画面に出す（波形のバー。ログファイルには書かない）。省略時は false
     """
@@ -224,14 +224,15 @@ def f_demo_csv_trigger(
             value = all_values[int(count % len(all_values))]
             
             """Cleanse Value"""
-            value, cast_fails = base.cast_dtype(value, cast_plan)
+            value, cast_fails, fail_cols = base.cast_dtype(value, cast_plan)
             if cast_fails > 0:
+                fail_col_names = [col_def[i][0] if i in col_def else f"col[{i}]" for i in fail_cols]
                 ErrorIF.report_event({
                     "signature": "CAST_FAIL",
                     "phase": "loop",
                     "category": "data",
                     "trigger_id": TRIGGER_NAME,
-                    "message": f"Cast failed {cast_fails} cols.",
+                    "message": f"Cast failed {cast_fails} cols: {fail_col_names}.",
                     "log_file": log_file
                 })
             

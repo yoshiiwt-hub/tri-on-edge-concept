@@ -4,8 +4,8 @@
 """
 ########################################
 # Act Trigger Module [FTP Client]
-# Ver: 02.f.20261108    By: IWATA, Y.'s Agent AI
-# Mod: pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string を削除。動作は変えない）
+# Ver: 02.g.20261124    By: IWATA,Y.'s Agent AI
+# Mod: ファイル安定チェックの間隔を設定 stable_check_sec で変えられるようにした（省略時 0.2 秒）
 ########################################
 Find が見つけたファイルを、上位側の FTP サーバーへ送り届ける出口
 
@@ -162,7 +162,7 @@ def a_send_ftp_trigger(
 ) -> None:
     """
     セグメントの file_path 列のファイルを FTP サーバへ送信する
-    Mod: 2026.10.04    By: IWATA, Y.'s Agent AI（相対パス・フォルダは処理しない。A-16）
+    Mod: 2026.11.24    By: IWATA,Y.'s Agent AI（安定チェックの間隔 stable_check_sec。省略時 0.2 秒）
 
     [動作の要点]（旧モジュール Docstring から移動）
         相対パス・フォルダは処理せず、異常としてログに残す
@@ -189,6 +189,7 @@ def a_send_ftp_trigger(
         # ---- 入力設定 ----
         file_path_col = base.resolve_act_col(config.get("file_path_col", 0), col_def, "file_path_col")  # Find と同じ列番号
         stable_check_n = int(config.get("stable_check_n", 1))
+        stable_check_sec = float(config.get("stable_check_sec", utl.STABLE_CHECK_SEC_DEFAULT))  # 安定チェックの間隔（秒）。省略時 0.2
 
         # ---- FTP接続設定（環境変数） ----
         ftp_host = os.getenv("FTP_SEND_HOST", "")
@@ -243,7 +244,7 @@ def a_send_ftp_trigger(
         base.output_log(MODULE_NAME,
             f"{TRIGGER_NAME} ftp={ftp_host}:{ftp_port} user={ftp_user} remote_dir={remote_dir!r} "
             f"atomic={atomic} overwrite={overwrite} passive={passive} timeout_sec={timeout_sec} "
-            f"file_path_col={file_path_col} stable_check_n={stable_check_n} "
+            f"file_path_col={file_path_col} stable_check_n={stable_check_n} stable_check_sec={stable_check_sec} "
             f"after_upload={after_upload} move_to={move_to} rename_pfx_sfx={[rename_pfx, rename_sfx]}", log_file)
         base.output_log(MODULE_NAME,
             f"{TRIGGER_NAME} retry_max={retry_max} retry_wait_sec={retry_wait_sec} "
@@ -431,7 +432,7 @@ def a_send_ftp_trigger(
             return False
 
         # 安定したファイルのみ
-        if stable_check_n > 0 and not utl.check_file_stability_retry(stable_check_n, local_path):
+        if stable_check_n > 0 and not utl.check_file_stability_retry(stable_check_n, local_path, stable_check_sec):
             _report_ng(file_name, f"File NOT Stable, skip. seg_id={seg_id}  {local_path}")
             return False
 

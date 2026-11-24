@@ -4,8 +4,8 @@
 """
 ########################################
 # Act Trigger Module [FILE HANDLE]
-# Ver: 08.h.20261109    By: IWATA, Y.'s Agent AI
-# Mod: Docstring から、リポジトリに無いファイルへの参照を削除
+# Ver: 08.i.20261124    By: IWATA,Y.'s Agent AI
+# Mod: ファイル安定チェックの間隔を設定 stable_check_sec で変えられるようにした（省略時 0.2 秒）
 ########################################
 Find が検出したファイルを、現場のファイル運用ルールに沿って後始末する Act
 
@@ -96,7 +96,7 @@ def a_handle_file_trigger(
 ) -> None:
     """
     検出したファイルをmove/copy/delete/zip/createする
-    Mod: 2026.10.06    By: IWATA, Y.'s Agent AI（to_dir に数値を指定すると、その列の値を出力先フォルダにする）
+    Mod: 2026.11.24    By: IWATA,Y.'s Agent AI（安定チェックの間隔 stable_check_sec。省略時 0.2 秒）
 
     [動作の要点]（旧モジュール Docstring から移動）
         相対パス・フォルダのパスは処理せず、異常としてログに残す（op="create" は対象外）
@@ -127,6 +127,7 @@ def a_handle_file_trigger(
 
         """ 安定チェック """
         stable_check_n = int(config.get("stable_check_n", 1))
+        stable_check_sec = float(config.get("stable_check_sec", utl.STABLE_CHECK_SEC_DEFAULT))  # 安定チェックの間隔（秒）。省略時 0.2
 
         """ Ack設定 """
         check_ack    = bool(config.get("check_ack", False))
@@ -176,7 +177,7 @@ def a_handle_file_trigger(
 
         base.output_log(MODULE_NAME,
             f"{TRIGGER_NAME} op={op!r} to_dir={to_dir!r} to_dir_col={to_dir_col} to_name={to_name!r} to_name_cols={to_name_cols} overwrite={overwrite} make_subdir_level={make_subdir_level} "
-            f"file_path_col={file_path_col} stable_check_n={stable_check_n} "
+            f"file_path_col={file_path_col} stable_check_n={stable_check_n} stable_check_sec={stable_check_sec} "
             f"check_ack={check_ack} ack_file_ext={ack_file_ext!r} delete_ack={delete_ack} "
             f"filter_prefixes={filter_prefixes} filter_suffixes={filter_suffixes} "
             f"zip_delete_src={zip_delete_src} "
@@ -506,7 +507,7 @@ def a_handle_file_trigger(
 
                     """安定チェック（op="create" は対象実ファイルが存在しないため常にスキップ）"""
                     if op != "create" and stable_check_n > 0:
-                        if not utl.check_file_stability_retry(stable_check_n, str(file_path)):
+                        if not utl.check_file_stability_retry(stable_check_n, str(file_path), stable_check_sec):
                             _report_ng(os.path.basename(str(file_path)),
                                 f"File not stable, skip: {file_path}")
                             skipped += 1
