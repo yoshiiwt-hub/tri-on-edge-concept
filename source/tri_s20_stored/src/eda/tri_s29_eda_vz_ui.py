@@ -11,12 +11,16 @@
 #    値や列名を文字列として埋め込んだ df.query() を使っていたため、WVID が文字列
 #    （例: ファイル名由来の seg_id "2026-09-17-200000"）の時や、列名に記号を含む時に
 #    SyntaxError になっていた。比較式での抽出（df[df[col] == v]）に修正（2026.11.12）。
+#  ③gen_interact_scatter() 内 def_trace(): マウスを重ねた時の値の文字を、データ型
+#    （dtype != 'object'）で数値か文字かを判定していたため、pandas 3（文字列の列の型が str）
+#    では質的変数を数値として整形しようとして ValueError になっていた。
+#    col_def の質的変数の一覧（l_col_ql）に入っているかで判定するように修正（2026.11.28）。
 ################################################################
 """
 ########################################
 # EDA Visualization Library [Interactive]（旧 AnalyzeFunctionsVZ_UI）
-# Ver: 01.f.20261112    By: IWATA, Y.'s Agent AI
-# Mod: WVID が文字列の時や、列名に記号を含む時に、抽出（df.query）が失敗する不具合を修正（比較式での抽出に置き換え）
+# Ver: 01.g.20261128    By: IWATA, Y.'s Agent AI
+# Mod: 質的・量的の判別を、データ型（object）ではなく col_def（質的変数の一覧）で行うように変更（pandas 3 で散布図が作れない不具合の修正）
 ########################################
 散布図・分布・折れ線・波形の重ね描きを、対話的なグラフ（Plotly）で作る可視化の本体
 
@@ -619,8 +623,9 @@ def gen_interact_scatter(df, l_ql_, l_qn_, tar_, d_cfg_):
         ##:if (c_ in l_col_qn)
         
         c_hover_ = c_ if (c_ not in [x_, y_]) else l_col_ql[0]
-        if (df_[c_hover_].dtype != 'object'): df_['c_str_'] = df_[c_hover_].map('{:.2f}'.format)
-        else: df_['c_str_'] = df_[c_hover_].map('\"{}\"'.format)
+        ## 質的変数（col_def の category）なら文字として、それ以外は数値として表示する（データ型では判別しない）
+        if (c_hover_ in l_col_ql): df_['c_str_'] = df_[c_hover_].map('\"{}\"'.format)
+        else: df_['c_str_'] = df_[c_hover_].map('{:.2f}'.format)
         
         trace_ = go.Scattergl(##go.Scatter(
             name='{}_{}'.format(x_, c_)

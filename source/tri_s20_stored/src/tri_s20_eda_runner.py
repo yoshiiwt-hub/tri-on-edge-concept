@@ -4,12 +4,13 @@
 """
 ########################################
 # EDA Runner
-# Ver: 01.g.20261108    By: IWATA, Y.'s Agent AI
-# Mod: pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string を削除。動作は変えない）
+# Ver: 01.h.20261128    By: IWATA,Y.'s Agent AI
+# Mod: IS_WAVE を廃止。波形として読めるかは読み込みモジュールに load_wave_data があるか（is_wave）で判定し、波形の重ね合わせは graph_to_viz の overlap で指定する形に変更
 ########################################
 蓄積したデータを読み込み、探索的データ分析（EDA）の統計表とグラフをまとめて作る入口
 
 主要関数:
+_is_wave   # 読み込みモジュールに load_wave_data があるか（波形として読めるデータか）を返す。
 load       # load_pp のデータロードモジュールを呼び、データと列定義を得る。
 explore    # 統計量を求めて Excel に出力する（tri_s21_eda_profiler）。
 visualise  # グラフを作る（tri_s21_eda_viz_interact / tri_s21_eda_viz_static）。
@@ -17,6 +18,8 @@ visualise  # グラフを作る（tri_s21_eda_viz_interact / tri_s21_eda_viz_sta
 位置づけ: Stored 領域の分析の入口。データの読込み・統計・可視化のモジュールを、設定（tri_s20_setting.json）に従って動的に呼び出す。学習の入口は tri_s20_learn_us_runner。
 設計意図: 読込み・統計・可視化を差し替えられる部品に分け、データセットが変わってもデータロードモジュールを1つ追加するだけで同じ分析を回せるようにする。
 前提・制約: 設定は同じフォルダの tri_s20_setting.json から読む（設定項目の説明は同ファイルのコメントを参照）。単体で実行する（__main__）。
+            波形として読めるかは、読み込みモジュールに load_wave_data があるかで判定する（データの性質）。波形の重ね合わせを描くかは、設定の graph_to_viz の overlap で決める（使う人の意図）。
+            overlap は load_wave_data で、ほかのグラフ（dist / line / scat）は load_data で読み、両方を指定すれば両方を順に行う。
 """
 MODULE_NAME = "Eda_Runner"
 
@@ -55,6 +58,20 @@ def _resolve_outdir(outdir_val: str, json_path: str) -> str:
     if os.path.isabs(outdir_val):
         return outdir_val
     return os.path.normpath(os.path.join(os.path.dirname(json_path), outdir_val))
+
+
+########################################
+# 0. Data Property
+########################################
+def _is_wave(MODULE) -> bool:
+    """読み込みモジュールに load_wave_data があるか（波形として読めるデータか）を返す"""
+    try:
+        _module = importlib.import_module(f"{MODULE[0]}.{MODULE[1]}")
+    except Exception as e:
+        utl.log(f"ERROR  {e}", MODULE_NAME)
+        print(traceback.format_exc(), flush=True)
+        raise
+    return hasattr(_module, "load_wave_data")
 
 
 ########################################
@@ -131,44 +148,59 @@ if __name__ == "__main__":
     ################################
     # Load Config                  #
     ################################
-    JSON_PATH   = os.path.join(os.path.dirname(__file__), "tri_s20_setting.json")
-    setting     = _load_setting(JSON_PATH)
-    TITLE       = setting["TITLE"]
-    OUTDIR      = _resolve_outdir(setting["OUTDIR"], JSON_PATH)
-    IS_WAVE     = setting["eda"]["IS_WAVE"]
-    LOAD_MODULE = TITLE.lower()
-    CONFIG      = {
+    JSON_PATH    = os.path.join(os.path.dirname(__file__), "tri_s20_setting.json")
+    setting      = _load_setting(JSON_PATH)
+    TITLE        = setting["TITLE"]
+    OUTDIR       = _resolve_outdir(setting["OUTDIR"], JSON_PATH)
+    LOAD_MODULE  = TITLE.lower()
+    GRAPH_TO_VIZ = setting["eda"].get("graph_to_viz", ["dist"])
+    CONFIG       = {
         "OUTDIR"        : OUTDIR,
         "INTERACT_MODE" : setting["eda"]["INTERACT_MODE"],
-        "graph_to_viz"  : setting["eda"]["graph_to_viz"],
+        "graph_to_viz"  : GRAPH_TO_VIZ,
     }
     os.makedirs(OUTDIR, exist_ok=True)
+
+    # 波形として読めるか（データの性質）は、読み込みモジュールに load_wave_data があるかで判定する
+    is_wave = _is_wave(["load_pp", LOAD_MODULE])
+    # 波形として見たいか（使う人の意図）は、graph_to_viz の overlap で指定する。ほかのグラフは表（load_data）で描く
+    graph_wave  = [g for g in GRAPH_TO_VIZ if (g == "overlap")]
+    graph_table = [g for g in GRAPH_TO_VIZ if (g != "overlap")]
+    done        = False
 
     ################################
     # Wave Data                    #
     ################################
-    if IS_WAVE:
-        
-        # Load Data
-        df, col_def = load(TITLE, ["load_pp", LOAD_MODULE, "load_wave_data"], CONFIG["OUTDIR"])
+    if graph_wave:
+        if is_wave:
+            # Load Data
+            df, col_def = load(TITLE, ["load_pp", LOAD_MODULE, "load_wave_data"], CONFIG["OUTDIR"])
 
-        # Interactive Plot
-        visualise(TITLE, ["eda", "tri_s21_eda_viz_interact", "main"] , df, col_def, {**CONFIG, "graph_to_viz": ["overlap"]})
+            # Interactive Plot
+            visualise(TITLE, ["eda", "tri_s21_eda_viz_interact", "main"] , df, col_def, {**CONFIG, "graph_to_viz": graph_wave})
+            done = True
+        else:
+            utl.log(f"WARNING  load_pp.{LOAD_MODULE} に load_wave_data が無いため（波形として読めないデータ）、overlap を飛ばします", MODULE_NAME)
 
-        exit(0)##
-    
     ################################
     # Stat (Table) Data            #
     ################################
-    # Load Data
-    df, col_def = load(TITLE, ["load_pp", LOAD_MODULE, "load_data"], CONFIG["OUTDIR"])
+    if graph_table:
+        # Load Data
+        df, col_def = load(TITLE, ["load_pp", LOAD_MODULE, "load_data"], CONFIG["OUTDIR"])
 
-    # Explore Data
-    explore(TITLE, ["eda", "tri_s21_eda_profiler", "main"], CONFIG["OUTDIR"], df, col_def)
-    
-    # Stable Plot
-    ##visualise(TITLE, ["eda", "tri_s21_eda_viz_static", "main"], df, col_def, CONFIG)
+        # Explore Data
+        explore(TITLE, ["eda", "tri_s21_eda_profiler", "main"], CONFIG["OUTDIR"], df, col_def)
 
-    # Interactive Plot
-    visualise(TITLE, ["eda", "tri_s21_eda_viz_interact", "main"] , df, col_def, CONFIG)
+        # Stable Plot
+        ##visualise(TITLE, ["eda", "tri_s21_eda_viz_static", "main"], df, col_def, CONFIG)
+
+        # Interactive Plot
+        visualise(TITLE, ["eda", "tri_s21_eda_viz_interact", "main"] , df, col_def, {**CONFIG, "graph_to_viz": graph_table})
+        done = True
+
+    if not done:
+        utl.log(f"ERROR  実行するグラフがありません（graph_to_viz={GRAPH_TO_VIZ}、load_wave_data の有無={is_wave}）。"
+                 "graph_to_viz に dist / line / scat / overlap を指定してください（overlap は load_wave_data があるデータだけ）", MODULE_NAME)
+        sys.exit(1)
     

@@ -4,14 +4,14 @@
 """
 ########################################
 # EDA Visualizer
-# Ver: 01.d.20261108    By: IWATA, Y.'s Agent AI
-# Mod: pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string を削除。動作は変えない）
+# Ver: 01.e.20261128    By: IWATA, Y.'s Agent AI
+# Mod: col_def の型が str の質的変数の一覧も組み立て、gen_viz_report に渡すようにした（質的・量的、文字・数値の判別をデータ型ではなく col_def で行うため）
 ########################################
 データの分布・関係・相関のグラフを画像で保存し、Excel のレポートにまとめる
 
 主要関数:
 main            # グラフの画像と Excel のレポートを作る（tri_s20_eda_runner の visualise から呼ばれる）。
-_parse_col_def  # col_def から、説明変数・目的変数・質的変数・量的変数の列名を組み立てる。
+_parse_col_def  # col_def から、説明変数・目的変数・質的変数・量的変数・型が str の質的変数の列名を組み立てる。
 
 位置づけ: グラフの生成とレポートの作成そのものは tri_s29_eda_vz_dt（旧 AnalyzeFunctionsVZ_DT）が受け持ち、このモジュールは col_def から引数を組み立てて呼び出す。対話的に確かめる場合は tri_s21_eda_viz_interact を使う。
 設計意図: col_def の role / var_type から引数を自動で組み立て、データセットごとにグラフの設定を書かなくて済むようにする。画像を Excel に埋め込み、ファイル1つで共有できるようにする。
@@ -39,10 +39,11 @@ import tri_s29_util as utl
 ########################################
 def _parse_col_def(
     col_def: Dict[str, List[Any]]
-) -> Tuple[List[str], Optional[str], str, List[str], List[str]]:
+) -> Tuple[List[str], Optional[str], str, List[str], List[str], List[str]]:
     """
     col_def を走査し、gen_viz_report() が必要とするパラメータ一式を組み立てる。
     Mod: 2026.08.09    By: IWATA,Y.
+    Mod: 2026.11.28    By: IWATA, Y.'s Agent AI（戻り値に IsQlStr を追加）
 
     Returns:
         featurename : explanatory列の列名リスト
@@ -50,19 +51,24 @@ def _parse_col_def(
         target_is   : targetname の role に応じて "qn"（numetory）/ "ql"（category）/ ""（不明）
         IsQualittv  : role="category" の列名リスト
         IsQuanttv   : role="numetory" の列名リスト
+        IsQlStr     : role="category" かつ型（col_def の2番目）が "str" の列名リスト
+                      （折れ線で番号に置き換える列。文字・数値をデータ型ではなく col_def で判別するため）
     """
     featurename: List[str] = []
     targetname:  Optional[str] = None
     IsQualittv:  List[str] = []
     IsQuanttv:   List[str] = []
+    IsQlStr:     List[str] = []
 
     # col_defのキーは "0","1",... の文字列想定だが、念のため数値順にソートして走査する
     for k in sorted(col_def.keys(), key=lambda s: int(s) if str(s).isdigit() else s):
         entry = col_def[k]
-        name, role, var_type = entry[0], entry[2], entry[3]
+        name, dtype, role, var_type = entry[0], entry[1], entry[2], entry[3]
 
         if role == "category":
             IsQualittv.append(name)
+            if dtype == "str":
+                IsQlStr.append(name)
         elif role == "numetory":
             IsQuanttv.append(name)
         # role == "key" は可視化対象外（散布図・箱ひげ図等の軸には使わない）
@@ -80,7 +86,7 @@ def _parse_col_def(
     else:
         target_is = ""  # 目的変数が col_def に見当たらない、または role="key" だった場合
 
-    return featurename, targetname, target_is, IsQualittv, IsQuanttv
+    return featurename, targetname, target_is, IsQualittv, IsQuanttv, IsQlStr
 
 
 ########################################
@@ -102,7 +108,7 @@ def main(TITLE: str, df, col_def: Dict[str, List[Any]], config: Dict[str, Any]) 
     utl.log("Visualize Start.", MODULE_NAME)
     OUTPUT = config.get("OUTDIR", "./output/")
 
-    featurename, targetname, target_is, IsQualittv, IsQuanttv = _parse_col_def(col_def)
+    featurename, targetname, target_is, IsQualittv, IsQuanttv, IsQlStr = _parse_col_def(col_def)
     utl.log(
         f"featurename={featurename}  targetname={targetname}({target_is})  "
         f"IsQualittv={IsQualittv}  IsQuanttv={IsQuanttv}",
@@ -134,6 +140,6 @@ def main(TITLE: str, df, col_def: Dict[str, List[Any]], config: Dict[str, Any]) 
     # AnalyzeFunctionsVZ_DT.py の __main__ ブロックと同じく事前に除外しておく
     df_viz = df.dropna(subset=IsQuanttv) if IsQuanttv else df
 
-    AFVD.gen_viz_report(featurename, targetname, target_is, df_viz, IsQualittv, IsQuanttv, cfg)
+    AFVD.gen_viz_report(featurename, targetname, target_is, df_viz, IsQualittv, IsQuanttv, cfg, IsQlStr)
 
     utl.log(f"Visualize End.  outdir={outdir}", MODULE_NAME)

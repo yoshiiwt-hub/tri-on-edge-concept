@@ -4,8 +4,8 @@
 """
 ########################################
 # EDA Interactive Visualizer
-# Ver: 01.h.20261108    By: IWATA, Y.'s Agent AI
-# Mod: pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string を削除。動作は変えない）
+# Ver: 01.i.20261128    By: IWATA,Y.'s Agent AI
+# Mod: 不要になったコメント（IS_WAVE で切り替えていた頃の名残り）を削除。動作は変えない
 ########################################
 データの傾向・関係・波形の重なりを、拡大・絞り込みのできる対話的なグラフ（Plotly）で確かめる
 
@@ -180,7 +180,7 @@ def _prepare_wave_columns(df) -> Tuple[Any, bool]:
 ########################################
 # Public Entry Point（tri_s20_eda_runner.py から呼ばれる）
 ########################################
-def main(TITLE: str, df, col_def: Dict[str, List[Any]], config: Dict[str, Any]) -> None:####, mode: str = "offline"
+def main(TITLE: str, df, col_def: Dict[str, List[Any]], config: Dict[str, Any]) -> None:
     """
     対話的（Plotly）可視化レポートを生成する。
     Mod: 2026.08.09    By: IWATA,Y.
@@ -199,8 +199,7 @@ def main(TITLE: str, df, col_def: Dict[str, List[Any]], config: Dict[str, Any]) 
     """
     from eda import tri_s29_eda_vz_ui as AFVU  # 対話的可視化本体（Figure生成）
     
-    ####is_wave = config.get("IS_WAVE", False)
-    graph_to_viz = config.get("graph_to_viz", ["dist"])####
+    graph_to_viz = config.get("graph_to_viz", ["dist"])
 
     mode = config.get("INTERACT_MODE", "online")
     if mode not in ("offline", "online"):
@@ -226,7 +225,7 @@ def main(TITLE: str, df, col_def: Dict[str, List[Any]], config: Dict[str, Any]) 
 
     # 波形重ね合わせ（gen_interact_layered_wave）向けに、TriEdge標準のseg_id/seg_indを
     # WVID/WVPTへ変換する（既にWVID列がある場合はそのまま。無ければdfをコピーして追加する）
-    df, _ = _prepare_wave_columns(df)####
+    df, _ = _prepare_wave_columns(df)
 
     cfg = {"title": TITLE}
 
@@ -235,25 +234,25 @@ def main(TITLE: str, df, col_def: Dict[str, List[Any]], config: Dict[str, Any]) 
         if (targetname is None) else ""
 
     # ---- 箱ひげ→分布 ----
-    if "dist" in graph_to_viz:####if not is_wave:
+    if "dist" in graph_to_viz:
         fig_dist = _safe("gen_interact_dist", AFVU.gen_interact_dist, df, IsQualittv, IsQuanttv, targetname, cfg,
                         hint_=_no_tar_hint)
         _save_fig(fig_dist, outdir, TITLE, "_Dist", mode)
 
     # ---- 折れ線（時系列／値順の傾向） ----
-    if "line" in graph_to_viz:####if not is_wave:
+    if "line" in graph_to_viz:
         fig_line = _safe("gen_interact_linechart", AFVU.gen_interact_linechart, df, IsQualittv, IsQuanttv, targetname, cfg,
                         hint_=_no_tar_hint)
         _save_fig(fig_line, outdir, TITLE, "_Line", mode)
 
     # ---- 散布図（変数間の関係性） ----
-    if "scat" in graph_to_viz:####if not is_wave:
+    if "scat" in graph_to_viz:
         fig_scat = _safe("gen_interact_scatter", AFVU.gen_interact_scatter, df, IsQualittv, IsQuanttv, targetname, cfg,
                         hint_=_no_tar_hint)
         _save_fig(fig_scat, outdir, TITLE, "_Scatter", mode)
 
     # ---- 波形重ね合わせ（WVID列がある場合のみ） ----
-    if "overlap" in graph_to_viz:####if is_wave:
+    if "overlap" in graph_to_viz:
         cfg_layer = {**cfg, "ql_to_v_cl": IsQualittv[:2]}  # AnalyzeFunctionsVZ_UI.py の __main__ 例に合わせる
         fig_layer = _safe("gen_interact_layered_wave", AFVU.gen_interact_layered_wave,
                            df, IsQualittv, IsQuanttv, targetname, cfg_layer, hint_=_no_tar_hint)

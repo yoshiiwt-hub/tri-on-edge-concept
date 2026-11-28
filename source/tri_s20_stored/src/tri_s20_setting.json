@@ -13,17 +13,15 @@
 
     "## eda" : "---- EDA（tri_s20_eda_runner.py）の設定 ----",
     "eda": {
-        "## IS_WAVE"       : "true=波形データモード（load_wave_data で読み、波形の重ね合わせ（overlap）だけを描く。graph_to_viz は使わない）",
-        "## IS_WAVE_2"     : "false=統計量（表）データモード（load_data で読み、統計量の Excel 出力（tri_s21_eda_profiler）と graph_to_viz のグラフを作る）",
-        "IS_WAVE"          : true,
-
         "## INTERACT_MODE" : "offline=ブラウザ表示なし（グラフを OUTDIR に HTML で保存）  online=インタラクティブ表示（ファイルに保存せず、その場で表示）",
         "## INTERACT_MODE_2": "online はブラウザ等の表示環境が必要。表示できない環境（サーバー等）では offline を使う。省略時は online",
         "INTERACT_MODE"    : "online",
 
-        "## graph_to_viz"  : "描画グラフ種別（複数指定可）: dist=箱ひげ・分布 / line=折れ線（傾向）/ scat=散布図（変数間の関係）。省略時は [\"dist\"]",
-        "## graph_to_viz_2": "IS_WAVE=false のときだけ使う。目的変数（col_def の var_type が objective の列）が無いと、正しく描けないグラフがある",
-        "graph_to_viz"     : ["dist", "scat"]
+        "## graph_to_viz"  : "描画グラフ種別（複数指定可）: dist=箱ひげ・分布 / line=折れ線（傾向）/ scat=散布図（変数間の関係）/ overlap=波形の重ね合わせ。省略時は [\"dist\"]",
+        "## graph_to_viz_2": "overlap は load_wave_data で読んで描く。読み込みモジュールに load_wave_data が無いデータ（波形として読めないデータ）では、警告して飛ばす",
+        "## graph_to_viz_3": "dist / line / scat は load_data で読み、統計量の Excel 出力（tri_s21_eda_profiler）もあわせて行う。overlap と両方を指定すれば両方を順に行う",
+        "## graph_to_viz_4": "目的変数（col_def の var_type が objective の列）が無いと、正しく描けないグラフがある",
+        "graph_to_viz"     : ["overlap", "dist", "scat", "line"]
     },
 
     "## learn" : "---- 学習（tri_s20_learn_us_runner.py）の設定 ----",
