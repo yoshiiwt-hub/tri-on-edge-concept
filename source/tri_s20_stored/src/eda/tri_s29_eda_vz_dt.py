@@ -26,13 +26,16 @@
 #    _safe() のエラーメッセージが元の例外内容（"None"等）だけでは原因が分かりにくかったため、
 #    tar_ is None の場合は「目的変数(objective)が未設定なため、この処理は実行できなかった
 #    可能性があります」というヒントをメッセージに追加するようにした。
+#  ⑥質的・量的、文字・数値の判別にデータ型（dtype == 'object'）を使っていたため、pandas 3
+#    （文字列の列の型が str）では誤判定していた。col_def で判別するように修正（2026.11.28）。
+#    visualiseData() の散布図: 色の列が量的変数（呼び出し側が cat_is_qn で渡す）ならカラーバー。
+#    gen_viz_report(): 型が str の質的変数（引数 ql_str_）だけを、折れ線で番号に置き換える。
 ################################################################
 """
 ########################################
 # EDA Visualization Library [Static]（旧 AnalyzeFunctionsVZ_DT）
-# Ver: 01.e.20261108    By: IWATA, Y.'s Agent AI
-# Mod: pyflakes の指摘を整理（使っていない import・変数、置き換えの無い f-string を削除。動作は変えない）。
-#      残す japanize_matplotlib の import に理由のコメントを付けた。改行を CRLF にそろえた
+# Ver: 01.f.20261128    By: IWATA, Y.'s Agent AI
+# Mod: 質的・量的、文字・数値の判別を、データ型（object）ではなく col_def で行うように変更（pandas 3 対応）。gen_viz_report に引数 ql_str_（型が str の質的変数）を追加
 ########################################
 分布・関係・相関などのグラフを画像で作り、Excel のレポートにまとめる可視化の本体
 
@@ -496,7 +499,8 @@ def visualiseData(DF, graph, LstColumn, catColumn, EXEC_CFG):
         ##カテゴリ指定あり
         if (CAT):
             ## カテゴリ数多 -> colorbar
-            if (cbar_on) or ((20<CAT_UNQ_NUM) and (DF[catColumn].dtype !='object')):
+            ## 色の列が量的変数（col_def の numetory。呼び出し側が cat_is_qn で渡す）ならカラーバー
+            if (cbar_on) or (EXEC_CFG.get("cat_is_qn", False)):
                 cmp_ = 'Blues' # 'Blues' 'bwr' 'coolwarm' 'seismic' 'PuOr' 'PRGn' 'cool'
                 cbar_pos_ = 'vertical' if FIGSIZE[0]/FIGSIZE[1]>=1 else 'horizontal'
                 
@@ -890,17 +894,14 @@ def image_to_excel(l_img, d_param):
 
 ########################################
 ## Mod: 2026.11.04    By: IWATA, Y.'s Agent AI（AnalyzeFunctionsPP.encodeData を移植）
+## Mod: 2026.11.28    By: IWATA, Y.'s Agent AI（データ型を見ずに、渡された列をすべて置き換える形に変更）
 def _encode_label(df_, l_col_):
-    """object 型の列を LabelEncoder で数値に置き換える。df_ はその場で書き換える"""
+    """渡された列を LabelEncoder で番号に置き換える。df_ はその場で書き換える（どの列を渡すかは呼び出し側が col_def で決める）"""
     l_cls_ = []
     for c_ in l_col_:
-        if (df_[c_].dtype == 'object'):
-            le_ = pp.LabelEncoder().fit(df_[c_])
-            df_[c_] = le_.transform(df_[c_])
-            l_cls_ = list(le_.classes_)
-        else:
-            l_cls_ = list(np.sort(df_[c_].unique()))
-        ##:if
+        le_ = pp.LabelEncoder().fit(df_[c_])
+        df_[c_] = le_.transform(df_[c_])
+        l_cls_ = list(le_.classes_)
     ##:for
     return df_, l_cls_
 ##:def
@@ -975,7 +976,9 @@ def _pca_eigenvector(df_, n_com_):
 ########################################
 
 ########################################
-def gen_viz_report(fea_, tar_, tar_is_, df_, ql_, qn_, cfg_):
+## Mod: 2026.11.28    By: IWATA, Y.'s Agent AI（引数 ql_str_ を追加。質的・量的、文字・数値の判別を col_def で行う）
+##   ql_str_ : col_def の型が str の質的変数の一覧（折れ線で番号に置き換える列）。省略時は、すべての質的変数を対象にする
+def gen_viz_report(fea_, tar_, tar_is_, df_, ql_, qn_, cfg_, ql_str_=None):
     print("_____ GEN VISUALIZE REPORT _____")
     print(dt.datetime.now(),'\n')
     
@@ -985,10 +988,13 @@ def gen_viz_report(fea_, tar_, tar_is_, df_, ql_, qn_, cfg_):
     cfg_.update(show=False, save=True)##
     print(cfg_,'\n')##
     
+    ## 型が str の質的変数（col_def で判別。データ型では判別しない）
+    l_ql_str_ = list(ql_) if (ql_str_ is None) else list(ql_str_)
+    
     def def_var(tar_, tar_is_, ql_, qn_):
         fea_ql_     = [s for s in ql_ if (s != tar_)]
-        fea_ql_num_ = [s for s in fea_ql_ if (df_[s].dtype != 'object')]
-        fea_ql_obj_ = [s for s in fea_ql_ if (df_[s].dtype == 'object')]
+        fea_ql_num_ = [s for s in fea_ql_ if (s not in l_ql_str_)]
+        fea_ql_obj_ = [s for s in fea_ql_ if (s in l_ql_str_)]
         fea_qn_     = [s for s in qn_ if (s != tar_)]
         
         print('Target: {}, is "{}"'.format(tar_,tar_is_))##
@@ -1050,12 +1056,13 @@ def gen_viz_report(fea_, tar_, tar_is_, df_, ql_, qn_, cfg_):
         
         l_imf = []
         if (tar_is_=='ql') and (2<=len(fea_qn_)):
-            for c1, c2 in itr.combinations(fea_qn_, 2): l_imf.append(visualiseData(df_, 'scatter', [c1, c2], tar_, cfg_))
+            for c1, c2 in itr.combinations(fea_qn_, 2): l_imf.append(visualiseData(df_, 'scatter', [c1, c2], tar_, {**cfg_, "cat_is_qn": False}))
         ##:if
         
         if (tar_is_=='qn') and (1<=len(fea_qn_)):
             cat_ = fea_ql_[0] if (0<len(fea_ql_)) else tar_
-            for c_ in fea_qn_: l_imf.append(visualiseData(df_, 'scatter', [c_, tar_], cat_, cfg_))
+            cat_is_qn_ = (cat_ == tar_)  # 質的変数が無い時は、量的変数の目的変数で色を付ける
+            for c_ in fea_qn_: l_imf.append(visualiseData(df_, 'scatter', [c_, tar_], cat_, {**cfg_, "cat_is_qn": cat_is_qn_}))
         ##:if
         
         print(l_imf,len(l_imf))##
@@ -1069,8 +1076,9 @@ def gen_viz_report(fea_, tar_, tar_is_, df_, ql_, qn_, cfg_):
         l_imf = []
         if (2<=len(fea_qn_)):
             cat_ = fea_ql_[0] if (0<len(fea_ql_)) else tar_
+            cat_is_qn_ = (cat_ == tar_) and (tar_is_ == 'qn')  # 色の列が量的変数の目的変数か
             for c1, c2 in itr.combinations(fea_qn_, 2):
-                if (tar_is_ != ''): l_imf.append(visualiseData(df_, 'scatter', [c1, c2], cat_, cfg_))####
+                if (tar_is_ != ''): l_imf.append(visualiseData(df_, 'scatter', [c1, c2], cat_, {**cfg_, "cat_is_qn": cat_is_qn_}))####
                 else              : l_imf.append(visualiseData(df_, 'scatter', [c1, c2], ''  , cfg_))
             ##:for
         ##:if
@@ -1088,7 +1096,7 @@ def gen_viz_report(fea_, tar_, tar_is_, df_, ql_, qn_, cfg_):
         df_v_ = df_.copy()
         print(df_v_.dtypes)##
 
-        obj_col = [tar_]+fea_ql_obj_ if (tar_is_=='ql') else fea_ql_obj_
+        obj_col = ([tar_] if ((tar_is_=='ql') and (tar_ in l_ql_str_)) else []) + fea_ql_obj_
         if (0<len(obj_col)): df_v_,_ = _encode_label(df_v_, obj_col)
 
         cols = [tar_]+fea_ql_num_ + fea_ql_obj_ + fea_qn_
@@ -1297,6 +1305,7 @@ if __name__ == "__main__":
     l_def = [col_def[k] for k in sorted(col_def.keys(), key=int)]
     ql  = [v[0] for v in l_def if (v[2]=="category")]
     qn  = [v[0] for v in l_def if (v[2]=="numetory")]
+    ql_str = [v[0] for v in l_def if (v[2]=="category") and (v[1]=="str")]
     fea = [v[0] for v in l_def if (v[3]=="explanatory")]
     tar = [v[0] for v in l_def if (v[3]=="objective")][0]
     tar_is = 'ql' if (tar in ql) else 'qn' if (tar in qn) else ''
@@ -1305,7 +1314,7 @@ if __name__ == "__main__":
     os.makedirs(outdir, exist_ok=True)
     cfg = dict(figsize=[3000/300,2000/300,300,1.0,10], title="Wine", outdir=outdir, FC="darkslategray", EC="snow")
     
-    l_l_img = gen_viz_report(fea, tar, tar_is, df.dropna(subset=qn), ql, qn, cfg)
+    l_l_img = gen_viz_report(fea, tar, tar_is, df.dropna(subset=qn), ql, qn, cfg, ql_str)
     print("images:", sum(len(l) for l in l_l_img), " excel:", os.path.exists(outdir+"Wine_img.xlsx"))
 ##:if
 ########################################

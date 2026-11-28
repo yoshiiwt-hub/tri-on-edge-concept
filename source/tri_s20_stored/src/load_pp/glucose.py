@@ -4,8 +4,8 @@
 """
 ########################################
 # Data Load Module [Glucose]
-# Ver: 01.b.20261118    By: IWATA,Y.'s Agent AI
-# Mod: キャッシュを utl.load_or_create_cache に変更（pyarrow が無い環境では pickle で保存する）
+# Ver: 01.c.20261128    By: IWATA,Y.'s Agent AI
+# Mod: docstring の IS_WAVE への言及を、graph_to_viz の overlap に合わせて変更（設定の IS_WAVE を廃止したため）
 ########################################
 bokeh の glucose（センサの電流値と血糖値の時系列、5分間隔）を読み、分析に使えるデータと列定義にする（センサ値から測定値を推定する回帰の例）
 
@@ -16,7 +16,7 @@ load_data  # データと列定義を返す（1行 = 1時刻）。
 設計意図: 読込みは bokeh_sampledata から行い、結果を cache/glucose_raw.parquet（pyarrow が無いときは .pickle）にキャッシュする。前処理は毎回実行する。
             対話的なグラフは質的変数が1つ以上ないと描けないため、日時から月（month）を作って質的変数にする。
 前提・制約: bokeh_sampledata が必要（パッケージに同梱のデータを読むため、ネット接続は不要）。読み直す場合は cache/glucose_raw.parquet / .pickle を削除・退避する。
-            isig が "nil"（欠測）の行は除く。波形モード（IS_WAVE）用の load_wave_data() は無い。
+            isig が "nil"（欠測）の行は除く。load_wave_data() は無いため、波形の重ね合わせ（overlap）には使えない。
             戻り値の col_def は {"0": [name, dtype, num/cat, exp/obj, comment], ...}。
 出典・ライセンス: bokeh のサンプルデータ（bokeh のメンテナが知人から直接受け取った測定記録）。パブリックドメイン（bokeh_sampledata のライセンス台帳による）。
 """
